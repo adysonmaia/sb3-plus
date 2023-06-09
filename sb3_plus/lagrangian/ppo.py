@@ -351,6 +351,7 @@ class LPPO(LagOnPolicyAlgorithm):
 
                 entropy_losses.append(entropy_loss.item())
 
+                # Scale policy loss to avoid large parameter changes
                 policy_penalty_loss = (policy_loss + penalty_loss) / (1.0 + penalty_multiplier)
                 loss = policy_penalty_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
                 # loss = policy_loss + penalty_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
