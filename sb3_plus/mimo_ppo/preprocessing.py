@@ -1,4 +1,4 @@
-from drlsp.util.space import flatdim
+from sb3_plus.common.space import flatdim
 from gym import spaces
 from typing import Any
 import numpy as np

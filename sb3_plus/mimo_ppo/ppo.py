@@ -16,9 +16,9 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedul
 from stable_baselines3.common.utils import explained_variance, get_schedule_fn, obs_as_tensor
 from stable_baselines3.common.vec_env import VecEnv
 
-from drlsp.sb3.mimo_ppo.policy import MultiOutputActorCriticPolicy, MIMOActorCriticPolicy
-from drlsp.sb3.mimo_ppo.buffer import RolloutBuffer
-from drlsp.sb3.mimo_ppo.preprocessing import clip_actions
+from sb3_plus.mimo_ppo.policy import MultiOutputActorCriticPolicy, MIMOActorCriticPolicy
+from sb3_plus.mimo_ppo.buffer import RolloutBuffer
+from sb3_plus.mimo_ppo.preprocessing import clip_actions
 
 
 class MultiOutputPPO(OnPolicyAlgorithm):
