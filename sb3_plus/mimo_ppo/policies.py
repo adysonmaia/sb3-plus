@@ -1,4 +1,4 @@
-from .distribution import make_proba_distribution, ParametrizedDistribution
+from .distributions import make_proba_distribution, ParametrizedDistribution
 from .preprocessing import scale_actions, unscale_actions, clip_actions
 from stable_baselines3.common.type_aliases import Schedule
 from stable_baselines3.common.policies import BasePolicy
@@ -20,10 +20,11 @@ from stable_baselines3.common.distributions import (
 from functools import partial
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 from torch import nn
+from gymnasium import spaces
 import torch as th
 import numpy as np
-import gym
 import collections
+import warnings
 
 
 class MultiOutputActorCriticPolicy(BasePolicy):
@@ -31,7 +32,7 @@ class MultiOutputActorCriticPolicy(BasePolicy):
     Policy class for actor-critic algorithms (has both policy and value prediction)
     that supports Single-Input (Observation) and Multi-Output (Action)
 
-    :param observation_space: Observation space (Tuple)
+    :param observation_space: Observation space
     :param action_space: Action space
     :param lr_schedule: Learning rate schedule (could be constant)
     :param net_arch: The specification of the policy and value networks.
@@ -54,16 +55,15 @@ class MultiOutputActorCriticPolicy(BasePolicy):
 
     def __init__(
             self,
-            observation_space: gym.spaces.Space,
-            action_space: gym.spaces.Dict,
+            observation_space: spaces.Space,
+            action_space: spaces.Dict,
             lr_schedule: Schedule,
-            net_arch: Union[List[int], Dict[str, List[int]], List[Dict[str, List[int]]], None] = None,
+            net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
             activation_fn: Type[nn.Module] = nn.Tanh,
             ortho_init: bool = True,
             use_sde: bool = False,
             log_std_init: float = 0.0,
             full_std: bool = True,
-            sde_net_arch: Optional[List[int]] = None,
             use_expln: bool = False,
             squash_output: bool = False,
             features_extractor_class: Type[BaseFeaturesExtractor] = FlattenExtractor,
@@ -90,6 +90,16 @@ class MultiOutputActorCriticPolicy(BasePolicy):
             normalize_images=normalize_images,
         )
 
+        if isinstance(net_arch, list) and len(net_arch) > 0 and isinstance(net_arch[0], dict):
+            warnings.warn(
+                (
+                    "As shared layers in the mlp_extractor are removed since SB3 v1.8.0, "
+                    "you should now pass directly a dictionary and not a list "
+                    "(net_arch=dict(pi=..., vf=...) instead of net_arch=[dict(pi=..., vf=...)])"
+                ),
+            )
+            net_arch = net_arch[0]
+
         # Default network architecture, from stable-baselines
         if net_arch is None:
             if features_extractor_class == NatureCNN:
@@ -110,12 +120,6 @@ class MultiOutputActorCriticPolicy(BasePolicy):
         else:
             self.pi_features_extractor = self.features_extractor
             self.vf_features_extractor = self.make_features_extractor()
-            # if the features extractor is not shared, there cannot be shared layers in the mlp_extractor
-            # TODO(antonin): update the check once we change net_arch behavior
-            if isinstance(net_arch, list) and len(net_arch) > 0:
-                raise ValueError(
-                    "Error: if the features extractor is not shared, there cannot be shared layers in the mlp_extractor"
-                )
 
         self.log_std_init = log_std_init
         self.dist_kwargs = None
@@ -232,7 +236,7 @@ class MultiOutputActorCriticPolicy(BasePolicy):
         distribution = self._get_action_dist_from_latent(latent_pi)
         actions = distribution.get_actions(deterministic=deterministic)
         log_prob = distribution.log_prob(actions)
-        # actions = actions.reshape((-1,) + self.action_space.shape)
+        # actions = actions.reshape((-1, *self.action_space.shape))
         return actions, values, log_prob
 
     def extract_features(self, obs: th.Tensor) -> Union[th.Tensor, Tuple[th.Tensor, th.Tensor]]:
@@ -294,6 +298,7 @@ class MultiOutputActorCriticPolicy(BasePolicy):
         """
         Get the policy action from an observation (and optional hidden state).
         Includes sugar-coating to handle different observations (e.g. normalizing images).
+
         :param observation: the input observation
         :param state: The last hidden states (can be None, used in recurrent policies)
         :param episode_start: The last masks (can be None, used in recurrent policies)
@@ -311,11 +316,11 @@ class MultiOutputActorCriticPolicy(BasePolicy):
         with th.no_grad():
             actions = self._predict(observation, deterministic=deterministic)
             # Convert to numpy, and reshape to the original action shape
-            # actions = actions.cpu().numpy().reshape((-1,) + self.action_space.shape)
+            # actions = actions.cpu().numpy().reshape((-1, *self.action_space.shape))
             # TODO: reshape actions for Dict space
             actions = actions.cpu().numpy()
 
-        if isinstance(self.action_space, (gym.spaces.Box, gym.spaces.Dict)):
+        if isinstance(self.action_space, (spaces.Box, spaces.Dict)):
             if self.squash_output:
                 # Rescale to proper domain when using squashing
                 actions = unscale_actions(actions, self.action_space)
@@ -326,7 +331,6 @@ class MultiOutputActorCriticPolicy(BasePolicy):
 
         # Remove batch dimension if needed
         if not vectorized_env:
-            # actions = actions[0]
             actions = actions.squeeze(axis=0)
 
         return actions, state
@@ -420,8 +424,8 @@ class MIMOActorCriticPolicy(MultiOutputActorCriticPolicy):
 
     def __init__(
             self,
-            observation_space: gym.spaces.Dict,
-            action_space: gym.spaces.Dict,
+            observation_space: spaces.Dict,
+            action_space: spaces.Dict,
             lr_schedule: Schedule,
             net_arch: Union[List[int], Dict[str, List[int]], List[Dict[str, List[int]]], None] = None,
             activation_fn: Type[nn.Module] = nn.Tanh,
@@ -429,7 +433,6 @@ class MIMOActorCriticPolicy(MultiOutputActorCriticPolicy):
             use_sde: bool = False,
             log_std_init: float = 0.0,
             full_std: bool = True,
-            sde_net_arch: Optional[List[int]] = None,
             use_expln: bool = False,
             squash_output: bool = False,
             features_extractor_class: Type[BaseFeaturesExtractor] = CombinedExtractor,
@@ -449,7 +452,6 @@ class MIMOActorCriticPolicy(MultiOutputActorCriticPolicy):
             use_sde,
             log_std_init,
             full_std,
-            sde_net_arch,
             use_expln,
             squash_output,
             features_extractor_class,

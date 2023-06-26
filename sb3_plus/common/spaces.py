@@ -1,9 +1,11 @@
-import gym.spaces
-from gym import spaces
+import gymnasium.spaces
+from gymnasium import spaces
 from collections import OrderedDict
 from functools import singledispatch
 from typing import Union
 import numpy as np
+
+# TODO: check if flatdim and unflatten are necessary for gymnasium package
 
 
 @singledispatch
@@ -129,7 +131,7 @@ def unflatten_discrete(space: spaces.Discrete, x: np.ndarray, use_onehot: bool =
 @unflatten.register
 def unflatten_dict(space: spaces.Dict, x: np.ndarray, use_onehot: bool = False) -> dict:
     if use_onehot:
-        return gym.spaces.unflatten(space, x)
+        return gymnasium.spaces.unflatten(space, x)
     else:
         dims = [flatdim(s, use_onehot=False) for s in space.spaces.values()]
         list_flattened = np.split(x, np.cumsum(dims)[:-1])
@@ -143,7 +145,7 @@ def unflatten_dict(space: spaces.Dict, x: np.ndarray, use_onehot: bool = False) 
 @unflatten.register
 def unflatten_tuple(space: spaces.Tuple, x: np.ndarray, use_onehot: bool = False) -> tuple:
     if use_onehot:
-        return gym.spaces.unflatten(space, x)
+        return gymnasium.spaces.unflatten(space, x)
     else:
         dims = [flatdim(s, use_onehot=False) for s in space.spaces]
         list_flattened = np.split(x, np.cumsum(dims)[:-1])

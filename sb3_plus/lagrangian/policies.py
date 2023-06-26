@@ -9,7 +9,7 @@ from stable_baselines3.common.type_aliases import Schedule
 from stable_baselines3.common.policies import ActorCriticPolicy, BasePolicy
 from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union, Iterator
 from functools import partial
-from gym import spaces
+from gymnasium import spaces
 from torch import nn
 import numpy as np
 import torch as th
@@ -49,13 +49,19 @@ class LagActorCriticPolicy(ActorCriticPolicy):
     :param penalty_lr_schedule: Learning rate schedule (could be constant) for penalty optimization
     """
 
+    pvf_features_extractor: BaseFeaturesExtractor
+    penalty_multiplier_parameter: nn.Parameter
+    penalty_multiplier_net: nn.Module
+    penalty_value_net: nn.Module
+    penalty_lr_schedule: Schedule
+    penalty_optimizer: th.optim.Optimizer
+
     def __init__(
             self,
             observation_space: spaces.Space,
             action_space: spaces.Space,
             lr_schedule: Schedule,
-            # TODO(antonin): update type annotation when we remove shared network support
-            net_arch: Union[List[int], Dict[str, List[int]], List[Dict[str, List[int]]], None] = None,
+            net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
             activation_fn: Type[nn.Module] = nn.Tanh,
             ortho_init: bool = True,
             use_sde: bool = False,
@@ -71,12 +77,7 @@ class LagActorCriticPolicy(ActorCriticPolicy):
             optimizer_kwargs: Optional[Dict[str, Any]] = None,
             penalty_lr_schedule: Optional[Schedule] = None,
     ):
-        self.pvf_features_extractor: Optional[BaseFeaturesExtractor] = None
-        self.penalty_multiplier_parameter: Optional[nn.Parameter] = None
-        self.penalty_multiplier_net: Optional[nn.Module] = None
-        self.penalty_value_net: Optional[nn.Module] = None
-        self.penalty_lr_schedule: Optional[Schedule] = penalty_lr_schedule
-        self.penalty_optimizer: Optional[th.optim.Optimizer] = None
+        self.penalty_lr_schedule = penalty_lr_schedule
 
         super().__init__(
             observation_space=observation_space,
@@ -123,8 +124,8 @@ class LagActorCriticPolicy(ActorCriticPolicy):
         self.penalty_multiplier_parameter = nn.Parameter(th.tensor(1.0), requires_grad=True)
         self.penalty_multiplier_net = nn.Softplus()
         self.penalty_optimizer = self.optimizer_class(self.penalty_parameters(),
-                                                      lr=self.penalty_lr_schedule(1), **self.optimizer_kwargs)
-        # self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
+                                                      lr=self.penalty_lr_schedule(1),
+                                                      **self.optimizer_kwargs)
 
     def _build_mlp_extractor(self) -> None:
         """
@@ -164,7 +165,7 @@ class LagActorCriticPolicy(ActorCriticPolicy):
         distribution = self._get_action_dist_from_latent(latent_pi)
         actions = distribution.get_actions(deterministic=deterministic)
         log_prob = distribution.log_prob(actions)
-        actions = actions.reshape((-1,) + self.action_space.shape)
+        actions = actions.reshape((-1, *self.action_space.shape))
         return actions, values, penalty_values, log_prob
 
     def evaluate_actions(self, obs: th.Tensor,
@@ -273,7 +274,7 @@ class LagActorCriticCnnPolicy(LagActorCriticPolicy):
         observation_space: spaces.Space,
         action_space: spaces.Space,
         lr_schedule: Schedule,
-        net_arch: Union[List[int], Dict[str, List[int]], List[Dict[str, List[int]]], None] = None,
+        net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
         activation_fn: Type[nn.Module] = nn.Tanh,
         ortho_init: bool = True,
         use_sde: bool = False,
@@ -348,7 +349,7 @@ class LagMultiInputActorCriticPolicy(LagActorCriticPolicy):
         observation_space: spaces.Dict,
         action_space: spaces.Space,
         lr_schedule: Schedule,
-        net_arch: Union[List[int], Dict[str, List[int]], List[Dict[str, List[int]]], None] = None,
+        net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
         activation_fn: Type[nn.Module] = nn.Tanh,
         ortho_init: bool = True,
         use_sde: bool = False,

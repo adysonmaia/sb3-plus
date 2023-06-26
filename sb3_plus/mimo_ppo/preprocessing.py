@@ -1,5 +1,5 @@
-from sb3_plus.common.space import flatdim
-from gym import spaces
+from sb3_plus.common.spaces import flatdim
+from gymnasium import spaces
 from typing import Any
 import numpy as np
 

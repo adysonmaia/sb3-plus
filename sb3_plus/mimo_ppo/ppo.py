@@ -1,10 +1,10 @@
 
 import warnings
-from typing import Any, Dict, Optional, Type, Union
+from typing import Any, ClassVar, Dict, Optional, Type, TypeVar, Union
 
 import numpy as np
 import torch as th
-from gym import spaces
+from gymnasium import spaces
 from torch.nn import functional as F
 
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
@@ -16,9 +16,11 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedul
 from stable_baselines3.common.utils import explained_variance, get_schedule_fn, obs_as_tensor
 from stable_baselines3.common.vec_env import VecEnv
 
-from sb3_plus.mimo_ppo.policy import MultiOutputActorCriticPolicy, MIMOActorCriticPolicy
-from sb3_plus.mimo_ppo.buffer import RolloutBuffer
+from sb3_plus.mimo_ppo.policies import MultiOutputActorCriticPolicy, MIMOActorCriticPolicy
+from sb3_plus.mimo_ppo.buffers import RolloutBuffer
 from sb3_plus.mimo_ppo.preprocessing import clip_actions
+
+SelfMO_PPO = TypeVar("SelfMO_PPO", bound="MultiOutputPPO")
 
 
 class MultiOutputPPO(OnPolicyAlgorithm):
@@ -30,6 +32,7 @@ class MultiOutputPPO(OnPolicyAlgorithm):
     Code: This implementation borrows code from OpenAI Spinning Up (https://github.com/openai/spinningup/)
     https://github.com/ikostrikov/pytorch-a2c-ppo-acktr-gail and
     Stable Baselines (PPO2 from https://github.com/hill-a/stable-baselines)
+
     Introduction to PPO: https://spinningup.openai.com/en/latest/algorithms/ppo.html
 
     :param policy: The policy model to use (MlpPolicy, CnnPolicy, ...)
@@ -63,9 +66,9 @@ class MultiOutputPPO(OnPolicyAlgorithm):
         because the clipping is not enough to prevent large update
         see issue #213 (cf https://github.com/hill-a/stable-baselines/issues/213)
         By default, there is no limit on the kl div.
+    :param stats_window_size: Window size for the rollout logging, specifying the number of episodes to average
+        the reported success rate, mean episode length, and mean reward over
     :param tensorboard_log: the log location for tensorboard (if None, no logging)
-    :param create_eval_env: Whether to create a second environment that will be
-        used for evaluating the agent periodically. (Only available when passing string for the environment)
     :param policy_kwargs: additional arguments to be passed to the policy on creation
     :param verbose: the verbosity level: 0 no output, 1 info, 2 debug
     :param seed: Seed for the pseudo random generators
@@ -74,7 +77,7 @@ class MultiOutputPPO(OnPolicyAlgorithm):
     :param _init_setup_model: Whether or not to build the network at the creation of the instance
     """
 
-    policy_aliases: Dict[str, Type[BasePolicy]] = {
+    policy_aliases: ClassVar[Dict[str, Type[BasePolicy]]] = {
         "MlpPolicy": ActorCriticPolicy,
         "CnnPolicy": ActorCriticCnnPolicy,
         "MultiInputPolicy": MultiInputActorCriticPolicy,
@@ -101,6 +104,7 @@ class MultiOutputPPO(OnPolicyAlgorithm):
         use_sde: bool = False,
         sde_sample_freq: int = -1,
         target_kl: Optional[float] = None,
+        stats_window_size: int = 100,
         tensorboard_log: Optional[str] = None,
         policy_kwargs: Optional[Dict[str, Any]] = None,
         verbose: int = 0,
@@ -120,6 +124,7 @@ class MultiOutputPPO(OnPolicyAlgorithm):
             max_grad_norm=max_grad_norm,
             use_sde=use_sde,
             sde_sample_freq=sde_sample_freq,
+            stats_window_size=stats_window_size,
             tensorboard_log=tensorboard_log,
             policy_kwargs=policy_kwargs,
             verbose=verbose,
@@ -204,7 +209,6 @@ class MultiOutputPPO(OnPolicyAlgorithm):
         clip_fractions = []
 
         continue_training = True
-
         # train for n_epochs epochs
         for epoch in range(self.n_epochs):
             approx_kl_divs = []
@@ -225,7 +229,7 @@ class MultiOutputPPO(OnPolicyAlgorithm):
                 # Normalize advantage
                 advantages = rollout_data.advantages
                 # Normalization does not make sense if mini batchsize == 1, see GH issue #325
-                if self.normalize_advantage:
+                if self.normalize_advantage and len(advantages) > 1:
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
                 # ratio between old and new policy, should be one at the first iteration
@@ -287,10 +291,10 @@ class MultiOutputPPO(OnPolicyAlgorithm):
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.policy.optimizer.step()
 
+            self._n_updates += 1
             if not continue_training:
                 break
 
-        self._n_updates += self.n_epochs
         explained_var = explained_variance(self.rollout_buffer.values.flatten(), self.rollout_buffer.returns.flatten())
 
         # Logs
@@ -310,15 +314,14 @@ class MultiOutputPPO(OnPolicyAlgorithm):
             self.logger.record("train/clip_range_vf", clip_range_vf)
 
     def learn(
-            self,
+            self: SelfMO_PPO,
             total_timesteps: int,
             callback: MaybeCallback = None,
             log_interval: int = 1,
             tb_log_name: str = "MO_PPO",
             reset_num_timesteps: bool = True,
             progress_bar: bool = False,
-    ) -> "MultiOutputPPO":
-
+    ) -> SelfMO_PPO:
         super().learn(
             total_timesteps=total_timesteps,
             callback=callback,
@@ -408,17 +411,22 @@ class MultiOutputPPO(OnPolicyAlgorithm):
                         terminal_value = self.policy.predict_values(terminal_obs)[0]
                     rewards[idx] += self.gamma * terminal_value
 
-            rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs)
-            self._last_obs = new_obs
+            rollout_buffer.add(
+                self._last_obs,  # type: ignore[arg-type]
+                actions,
+                rewards,
+                self._last_episode_starts,  # type: ignore[arg-type]
+                values, log_probs,
+            )
+            self._last_obs = new_obs  # type: ignore[assignment]
             self._last_episode_starts = dones
 
         with th.no_grad():
             # Compute value for the last timestep
-            values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))
+            values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))  # type: ignore[arg-type]
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
         callback.on_rollout_end()
 
         return True
-

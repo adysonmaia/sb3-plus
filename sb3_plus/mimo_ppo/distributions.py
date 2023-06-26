@@ -2,8 +2,8 @@ from stable_baselines3.common import distributions as sb3
 from .preprocessing import get_net_action_dim, get_action_dim
 from typing import Dict, Tuple, Any, Union, Optional
 from torch import nn
+from gymnasium import spaces
 import torch as th
-import gym
 
 
 class ParametrizedDistribution(sb3.Distribution):
@@ -12,10 +12,10 @@ class ParametrizedDistribution(sb3.Distribution):
 
     """
 
-    def __init__(self, action_space: Union[gym.spaces.Dict, gym.spaces.Tuple]):
+    def __init__(self, action_space: Union[spaces.Dict, spaces.Tuple]):
         super().__init__()
         self.action_space = action_space
-        list_spaces = action_space.spaces.values() if isinstance(action_space, gym.spaces.Dict) else action_space.spaces
+        list_spaces = action_space.spaces.values() if isinstance(action_space, spaces.Dict) else action_space.spaces
         self.distribution = [sb3.make_proba_distribution(s) for s in list_spaces]
         self.action_dims = [get_action_dim(s) for s in list_spaces]
         self._flatten_action_dim = sum(self.action_dims)
@@ -127,7 +127,7 @@ class ParametrizedDistribution(sb3.Distribution):
         return actions, log_prob
 
 
-def make_proba_distribution(action_space: gym.spaces.Space, use_sde: bool = False,
+def make_proba_distribution(action_space: spaces.Space, use_sde: bool = False,
                             dist_kwargs: Optional[Dict[str, Any]] = None) -> sb3.Distribution:
     """
     Return an instance of Distribution for the correct type of action space
@@ -137,7 +137,7 @@ def make_proba_distribution(action_space: gym.spaces.Space, use_sde: bool = Fals
     :param dist_kwargs: Keyword arguments to pass to the probability distribution
     :return: the appropriate Distribution object
     """
-    if isinstance(action_space, (gym.spaces.Dict, gym.spaces.Tuple)):
+    if isinstance(action_space, (spaces.Dict, spaces.Tuple)):
         return ParametrizedDistribution(action_space)
     else:
         return sb3.make_proba_distribution(action_space, use_sde, dist_kwargs)

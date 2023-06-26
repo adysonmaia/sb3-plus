@@ -1,10 +1,10 @@
 from .type_aliases import LagRolloutBufferSamples, LagDictRolloutBufferSamples
 from stable_baselines3.common.vec_env import VecNormalize
 from stable_baselines3.common.buffers import BaseBuffer
-from typing import Any, Dict, Generator, List, Optional, Union
+from typing import Dict, Generator, Optional, Union
 import numpy as np
 import torch as th
-from gym import spaces
+from gymnasium import spaces
 
 
 class LagRolloutBuffer(BaseBuffer):
@@ -30,6 +30,20 @@ class LagRolloutBuffer(BaseBuffer):
     :param n_envs: Number of parallel environments
     """
 
+    observations: np.ndarray
+    actions: np.ndarray
+    rewards: np.ndarray
+    advantages: np.ndarray
+    returns: np.ndarray
+    episode_starts: np.ndarray
+    log_probs: np.ndarray
+    values: np.ndarray
+
+    penalty_costs: np.ndarray
+    penalty_returns: np.ndarray
+    penalty_advantages: np.ndarray
+    penalty_values: np.ndarray
+
     def __init__(
         self,
         buffer_size: int,
@@ -44,15 +58,11 @@ class LagRolloutBuffer(BaseBuffer):
         super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
         self.gae_lambda = gae_lambda
         self.gamma = gamma
-        self.observations, self.actions, self.rewards, self.advantages = None, None, None, None
-        self.returns, self.episode_starts, self.values, self.log_probs = None, None, None, None
-        self.penalty_costs, self.penalty_returns, self.penalty_advantages, self.penalty_values = None, None, None, None
         self.generator_ready = False
         self.reset()
 
     def reset(self) -> None:
-
-        self.observations = np.zeros((self.buffer_size, self.n_envs) + self.obs_shape, dtype=np.float32)
+        self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=np.float32)
         self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float32)
         self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
@@ -145,7 +155,7 @@ class LagRolloutBuffer(BaseBuffer):
         # Reshape needed when using multiple envs with discrete observations
         # as numpy cannot broadcast (n_discrete,) to (n_discrete, 1)
         if isinstance(self.observation_space, spaces.Discrete):
-            obs = obs.reshape((self.n_envs,) + self.obs_shape)
+            obs = obs.reshape((self.n_envs, *self.obs_shape))
 
         # Same reshape, for actions
         action = action.reshape((self.n_envs, self.action_dim))
@@ -167,7 +177,6 @@ class LagRolloutBuffer(BaseBuffer):
         indices = np.random.permutation(self.buffer_size * self.n_envs)
         # Prepare the data
         if not self.generator_ready:
-
             _tensor_names = [
                 "observations",
                 "actions",
@@ -193,8 +202,11 @@ class LagRolloutBuffer(BaseBuffer):
             yield self._get_samples(indices[start_idx : start_idx + batch_size])
             start_idx += batch_size
 
-    def _get_samples(self, batch_inds: np.ndarray,
-                     env: Optional[VecNormalize] = None) -> LagRolloutBufferSamples:
+    def _get_samples(
+            self,
+            batch_inds: np.ndarray,
+            env: Optional[VecNormalize] = None
+    ) -> LagRolloutBufferSamples:
         data = (
             self.observations[batch_inds],
             self.actions[batch_inds],
@@ -234,6 +246,8 @@ class LagDictRolloutBuffer(LagRolloutBuffer):
     :param n_envs: Number of parallel environments
     """
 
+    observations: Dict[str, np.ndarray]
+
     def __init__(
         self,
         buffer_size: int,
@@ -253,7 +267,7 @@ class LagDictRolloutBuffer(LagRolloutBuffer):
         super().reset()
         self.observations = {}
         for key, obs_input_shape in self.obs_shape.items():
-            self.observations[key] = np.zeros((self.buffer_size, self.n_envs) + obs_input_shape, dtype=np.float32)
+            self.observations[key] = np.zeros((self.buffer_size, self.n_envs, *obs_input_shape), dtype=np.float32)
 
     def add(
         self,
@@ -291,6 +305,9 @@ class LagDictRolloutBuffer(LagRolloutBuffer):
                 obs_ = obs_.reshape((self.n_envs,) + self.obs_shape[key])
             self.observations[key][self.pos] = obs_
 
+        # Reshape to handle multi-dim and discrete action spaces, see GH #970 #1392
+        action = action.reshape((self.n_envs, self.action_dim))
+
         self.actions[self.pos] = np.array(action).copy()
         self.rewards[self.pos] = np.array(reward).copy()
         self.episode_starts[self.pos] = np.array(episode_start).copy()
@@ -302,12 +319,14 @@ class LagDictRolloutBuffer(LagRolloutBuffer):
         if self.pos == self.buffer_size:
             self.full = True
 
-    def get(self, batch_size: Optional[int] = None) -> Generator[LagDictRolloutBufferSamples, None, None]:
+    def get(
+            self,
+            batch_size: Optional[int] = None
+    ) -> Generator[LagDictRolloutBufferSamples, None, None]:
         assert self.full, ""
         indices = np.random.permutation(self.buffer_size * self.n_envs)
         # Prepare the data
         if not self.generator_ready:
-
             for key, obs in self.observations.items():
                 self.observations[key] = self.swap_and_flatten(obs)
 
@@ -327,9 +346,11 @@ class LagDictRolloutBuffer(LagRolloutBuffer):
             yield self._get_samples(indices[start_idx : start_idx + batch_size])
             start_idx += batch_size
 
-    def _get_samples(self, batch_inds: np.ndarray,
-                     env: Optional[VecNormalize] = None) -> LagDictRolloutBufferSamples:
-
+    def _get_samples(
+            self,
+            batch_inds: np.ndarray,
+            env: Optional[VecNormalize] = None
+    ) -> LagDictRolloutBufferSamples:
         return LagDictRolloutBufferSamples(
             observations={key: self.to_torch(obs[batch_inds]) for (key, obs) in self.observations.items()},
             actions=self.to_torch(self.actions[batch_inds]),

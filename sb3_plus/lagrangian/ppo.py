@@ -3,9 +3,9 @@ from .on_policy_algorithm import LagOnPolicyAlgorithm
 from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import explained_variance, get_schedule_fn, update_learning_rate
-from typing import Any, Dict, Optional, Type, TypeVar, Union
+from typing import Any, ClassVar, Dict, Optional, Type, TypeVar, Union
 from torch.nn import functional as F
-from gym import spaces
+from gymnasium import spaces
 import numpy as np
 import torch as th
 import warnings
@@ -56,6 +56,8 @@ class LPPO(LagOnPolicyAlgorithm):
         because the clipping is not enough to prevent large update
         see issue #213 (cf https://github.com/hill-a/stable-baselines/issues/213)
         By default, there is no limit on the kl div.
+    :param stats_window_size: Window size for the rollout logging, specifying the number of episodes to average
+        the reported success rate, mean episode length, and mean reward over
     :param tensorboard_log: the log location for tensorboard (if None, no logging)
     :param policy_kwargs: additional arguments to be passed to the policy on creation
     :param verbose: Verbosity level: 0 for no output, 1 for info messages (such as device or wrappers used), 2 for
@@ -76,7 +78,7 @@ class LPPO(LagOnPolicyAlgorithm):
     :param penalty_n_epochs: Number of epoch when optimizing the surrogate penalty loss
     """
 
-    policy_aliases: Dict[str, Type[BasePolicy]] = {
+    policy_aliases: ClassVar[Dict[str, Type[BasePolicy]]] = {
         "MlpPolicy": LagActorCriticPolicy,
         "CnnPolicy": LagActorCriticCnnPolicy,
         "MultiInputPolicy": LagMultiInputActorCriticPolicy,
@@ -101,6 +103,7 @@ class LPPO(LagOnPolicyAlgorithm):
         use_sde: bool = False,
         sde_sample_freq: int = -1,
         target_kl: Optional[float] = None,
+        stats_window_size: int = 100,
         tensorboard_log: Optional[str] = None,
         policy_kwargs: Optional[Dict[str, Any]] = None,
         verbose: int = 0,
@@ -126,6 +129,7 @@ class LPPO(LagOnPolicyAlgorithm):
             max_grad_norm=max_grad_norm,
             use_sde=use_sde,
             sde_sample_freq=sde_sample_freq,
+            stats_window_size=stats_window_size,
             tensorboard_log=tensorboard_log,
             policy_kwargs=policy_kwargs,
             verbose=verbose,
@@ -281,7 +285,6 @@ class LPPO(LagOnPolicyAlgorithm):
         clip_fractions = []
 
         continue_training = True
-
         # train for n_epochs epochs
         for epoch in range(self.n_epochs):
             approx_kl_divs = []
@@ -378,10 +381,10 @@ class LPPO(LagOnPolicyAlgorithm):
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.policy.optimizer.step()
 
+            self._n_updates += 1
             if not continue_training:
                 break
 
-        self._n_updates += self.n_epochs
         explained_var = explained_variance(self.rollout_buffer.values.flatten(), self.rollout_buffer.returns.flatten())
 
         # Logs
@@ -410,8 +413,7 @@ class LPPO(LagOnPolicyAlgorithm):
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
     ) -> SelfLPPO:
-
-        return super().learn(
+        super().learn(
             total_timesteps=total_timesteps,
             callback=callback,
             log_interval=log_interval,
@@ -419,3 +421,4 @@ class LPPO(LagOnPolicyAlgorithm):
             reset_num_timesteps=reset_num_timesteps,
             progress_bar=progress_bar,
         )
+        return self
