@@ -1,4 +1,4 @@
-from sb3_plus.common.spaces import flatdim
+from sb3_plus.common.spaces import action_flatdim
 from gymnasium import spaces
 from typing import Any
 import numpy as np
@@ -19,7 +19,7 @@ def get_action_dim(action_space: spaces.Space) -> int:
     :param action_space:
     :return:
     """
-    return flatdim(action_space, use_onehot=False)
+    return action_flatdim(action_space)
 
 
 def get_net_action_dim(action_space: spaces.Space) -> int:
@@ -38,6 +38,8 @@ def get_net_action_dim(action_space: spaces.Space) -> int:
         return int(action_space.n)
     elif isinstance(action_space, spaces.Dict):
         return sum([get_net_action_dim(s) for s in action_space.spaces.values()])
+    elif isinstance(action_space, spaces.Tuple):
+        return sum([get_net_action_dim(s) for s in action_space.spaces])
     else:
         raise NotImplementedError(f"{action_space} action space is not supported")
 
@@ -104,8 +106,3 @@ def clip_actions(actions: np.ndarray, action_space: spaces.Space) -> np.ndarray:
     else:
         # No clipping for discrete actions
         return actions
-
-
-
-
-

@@ -13,6 +13,7 @@ from stable_baselines3.common.type_aliases import (
     ReplayBufferSamples,
     RolloutBufferSamples,
 )
+from stable_baselines3.common.utils import get_device
 from stable_baselines3.common.vec_env import VecNormalize
 from .preprocessing import get_action_dim, get_action_dtype
 
@@ -23,7 +24,7 @@ except ImportError:
     psutil = None
 
 
-class BaseBuffer(ABC):
+class MultiOutputBaseBuffer(ABC):
     """
     Base class that represent a buffer (rollout or replay)
 
@@ -52,7 +53,7 @@ class BaseBuffer(ABC):
         self.action_dim = get_action_dim(action_space)
         self.pos = 0
         self.full = False
-        self.device = device
+        self.device = get_device(device)
         self.n_envs = n_envs
 
     @staticmethod
@@ -112,7 +113,7 @@ class BaseBuffer(ABC):
 
     @abstractmethod
     def _get_samples(
-        self, batch_inds: np.ndarray, env: Optional[VecNormalize] = None
+            self, batch_inds: np.ndarray, env: Optional[VecNormalize] = None
     ) -> Union[ReplayBufferSamples, RolloutBufferSamples]:
         """
         :param batch_inds:
@@ -137,8 +138,8 @@ class BaseBuffer(ABC):
 
     @staticmethod
     def _normalize_obs(
-        obs: Union[np.ndarray, Dict[str, np.ndarray]],
-        env: Optional[VecNormalize] = None,
+            obs: Union[np.ndarray, Dict[str, np.ndarray]],
+            env: Optional[VecNormalize] = None,
     ) -> Union[np.ndarray, Dict[str, np.ndarray]]:
         if env is not None:
             return env.normalize_obs(obs)
@@ -151,7 +152,7 @@ class BaseBuffer(ABC):
         return reward
 
 
-class ReplayBuffer(BaseBuffer):
+class MultiOutputReplayBuffer(MultiOutputBaseBuffer):
     """
     Replay buffer used in off-policy algorithms like SAC/TD3.
 
@@ -312,7 +313,7 @@ class ReplayBuffer(BaseBuffer):
         return ReplayBufferSamples(*tuple(map(self.to_torch, data)))
 
 
-class RolloutBuffer(BaseBuffer):
+class MultiOutputRolloutBuffer(MultiOutputBaseBuffer):
     """
     Rollout buffer used in on-policy algorithms like A2C/PPO.
     It corresponds to ``buffer_size`` transitions collected
@@ -487,7 +488,7 @@ class RolloutBuffer(BaseBuffer):
         return RolloutBufferSamples(*tuple(map(self.to_torch, data)))
 
 
-class DictReplayBuffer(ReplayBuffer):
+class MultiOutputDictReplayBuffer(MultiOutputReplayBuffer):
     """
     Dict Replay buffer used in off-policy algorithms like SAC/TD3.
     Extends the ReplayBuffer to use dictionary observations
@@ -514,7 +515,7 @@ class DictReplayBuffer(ReplayBuffer):
         optimize_memory_usage: bool = False,
         handle_timeout_termination: bool = True,
     ):
-        super(ReplayBuffer, self).__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
+        super(MultiOutputReplayBuffer, self).__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
 
         assert isinstance(self.obs_shape, dict), "DictReplayBuffer must be used with Dict obs space only"
         self.buffer_size = max(buffer_size // n_envs, 1)
@@ -613,7 +614,7 @@ class DictReplayBuffer(ReplayBuffer):
             to normalize the observations/rewards when sampling
         :return:
         """
-        return super(ReplayBuffer, self).sample(batch_size=batch_size, env=env)
+        return super(MultiOutputReplayBuffer, self).sample(batch_size=batch_size, env=env)
 
     def _get_samples(self, batch_inds: np.ndarray, env: Optional[VecNormalize] = None) -> DictReplayBufferSamples:
         # Sample randomly the env idx
@@ -642,7 +643,7 @@ class DictReplayBuffer(ReplayBuffer):
         )
 
 
-class DictRolloutBuffer(RolloutBuffer):
+class MultiOutputDictRolloutBuffer(MultiOutputRolloutBuffer):
     """
     Dict Rollout buffer used in on-policy algorithms like A2C/PPO.
     Extends the RolloutBuffer to use dictionary observations
@@ -679,7 +680,7 @@ class DictRolloutBuffer(RolloutBuffer):
         gamma: float = 0.99,
         n_envs: int = 1,
     ):
-        super(RolloutBuffer, self).__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
+        super(MultiOutputRolloutBuffer, self).__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
 
         assert isinstance(self.obs_shape, dict), "DictRolloutBuffer must be used with Dict obs space only"
 
@@ -702,7 +703,7 @@ class DictRolloutBuffer(RolloutBuffer):
         self.log_probs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.generator_ready = False
-        super(RolloutBuffer, self).reset()
+        super(MultiOutputRolloutBuffer, self).reset()
 
     def add(
         self,

@@ -1,4 +1,4 @@
-from .distributions import make_proba_distribution, ParametrizedDistribution
+from .distributions import make_proba_distribution, MultiOutputDistribution
 from .preprocessing import scale_actions, unscale_actions, clip_actions
 from stable_baselines3.common.type_aliases import Schedule
 from stable_baselines3.common.policies import BasePolicy
@@ -25,6 +25,9 @@ import torch as th
 import numpy as np
 import collections
 import warnings
+
+
+MultiOutputAction = Union[np.ndarray, int, tuple, dict]
 
 
 class MultiOutputActorCriticPolicy(BasePolicy):
@@ -63,8 +66,6 @@ class MultiOutputActorCriticPolicy(BasePolicy):
             ortho_init: bool = True,
             use_sde: bool = False,
             log_std_init: float = 0.0,
-            full_std: bool = True,
-            use_expln: bool = False,
             squash_output: bool = False,
             features_extractor_class: Type[BaseFeaturesExtractor] = FlattenExtractor,
             features_extractor_kwargs: Optional[Dict[str, Any]] = None,
@@ -124,6 +125,9 @@ class MultiOutputActorCriticPolicy(BasePolicy):
         self.log_std_init = log_std_init
         self.dist_kwargs = None
 
+        assert not use_sde, 'Error: State Dependent Exploration not supported for multi output'
+        self.use_sde = use_sde
+
         # Action distribution
         self.action_dist = make_proba_distribution(action_space)
 
@@ -138,6 +142,7 @@ class MultiOutputActorCriticPolicy(BasePolicy):
             dict(
                 net_arch=self.net_arch,
                 activation_fn=self.activation_fn,
+                use_sde=self.use_sde,
                 log_std_init=self.log_std_init,
                 squash_output=default_none_kwargs["squash_output"],
                 lr_schedule=self._dummy_schedule,  # dummy lr schedule, not needed for loading policy alone
@@ -175,7 +180,7 @@ class MultiOutputActorCriticPolicy(BasePolicy):
 
         latent_dim_pi = self.mlp_extractor.latent_dim_pi
 
-        if isinstance(self.action_dist, (DiagGaussianDistribution, ParametrizedDistribution)):
+        if isinstance(self.action_dist, (DiagGaussianDistribution, MultiOutputDistribution)):
             self.action_net, self.log_std = self.action_dist.proba_distribution_net(
                 latent_dim=latent_dim_pi, log_std_init=self.log_std_init
             )
@@ -236,6 +241,7 @@ class MultiOutputActorCriticPolicy(BasePolicy):
         distribution = self._get_action_dist_from_latent(latent_pi)
         actions = distribution.get_actions(deterministic=deterministic)
         log_prob = distribution.log_prob(actions)
+        # TODO: reshape actions
         # actions = actions.reshape((-1, *self.action_space.shape))
         return actions, values, log_prob
 
@@ -274,7 +280,7 @@ class MultiOutputActorCriticPolicy(BasePolicy):
             return self.action_dist.proba_distribution(action_logits=mean_actions)
         elif isinstance(self.action_dist, StateDependentNoiseDistribution):
             return self.action_dist.proba_distribution(mean_actions, self.log_std, latent_pi)
-        elif isinstance(self.action_dist, ParametrizedDistribution):
+        elif isinstance(self.action_dist, MultiOutputDistribution):
             return self.action_dist.proba_distribution(mean_actions, self.log_std)
         else:
             raise ValueError("Invalid action distribution")
@@ -294,7 +300,7 @@ class MultiOutputActorCriticPolicy(BasePolicy):
             state: Optional[Tuple[np.ndarray, ...]] = None,
             episode_start: Optional[np.ndarray] = None,
             deterministic: bool = False,
-    ) -> Tuple[np.ndarray, Optional[Tuple[np.ndarray, ...]]]:
+    ) -> Tuple[MultiOutputAction, Optional[Tuple[np.ndarray, ...]]]:
         """
         Get the policy action from an observation (and optional hidden state).
         Includes sugar-coating to handle different observations (e.g. normalizing images).
@@ -315,12 +321,12 @@ class MultiOutputActorCriticPolicy(BasePolicy):
 
         with th.no_grad():
             actions = self._predict(observation, deterministic=deterministic)
-            # Convert to numpy, and reshape to the original action shape
-            # actions = actions.cpu().numpy().reshape((-1, *self.action_space.shape))
-            # TODO: reshape actions for Dict space
-            actions = actions.cpu().numpy()
+        # Convert to numpy, and reshape to the original action shape
+        # actions = actions.cpu().numpy().reshape((-1, *self.action_space.shape))
+        # TODO: reshape actions for Dict space
+        actions = actions.cpu().numpy()
 
-        if isinstance(self.action_space, (spaces.Box, spaces.Dict)):
+        if isinstance(self.action_space, (spaces.Box, spaces.Dict, spaces.Tuple)):
             if self.squash_output:
                 # Rescale to proper domain when using squashing
                 actions = unscale_actions(actions, self.action_space)

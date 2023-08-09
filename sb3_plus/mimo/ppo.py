@@ -1,4 +1,3 @@
-
 import warnings
 from typing import Any, ClassVar, Dict, Optional, Type, TypeVar, Union
 
@@ -7,23 +6,19 @@ import torch as th
 from gymnasium import spaces
 from torch.nn import functional as F
 
-from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
 from stable_baselines3.common.policies import (
     ActorCriticCnnPolicy, ActorCriticPolicy, BasePolicy, MultiInputActorCriticPolicy
 )
-from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import explained_variance, get_schedule_fn, obs_as_tensor
-from stable_baselines3.common.vec_env import VecEnv
 
-from sb3_plus.mimo_ppo.policies import MultiOutputActorCriticPolicy, MIMOActorCriticPolicy
-from sb3_plus.mimo_ppo.buffers import RolloutBuffer
-from sb3_plus.mimo_ppo.preprocessing import clip_actions
+from .on_policy_algorithm import MultiOutputOnPolicyAlgorithm
+from .policies import MultiOutputActorCriticPolicy, MIMOActorCriticPolicy
 
-SelfMO_PPO = TypeVar("SelfMO_PPO", bound="MultiOutputPPO")
+SelfMultiOutputPPO = TypeVar("SelfMultiOutputPPO", bound="MultiOutputPPO")
 
 
-class MultiOutputPPO(OnPolicyAlgorithm):
+class MultiOutputPPO(MultiOutputOnPolicyAlgorithm):
     """
     Proximal Policy Optimization algorithm (PPO) (clip version)
     that supports Multi-Input (Dict Observation) and Multi-Output (Dict Action)
@@ -136,13 +131,16 @@ class MultiOutputPPO(OnPolicyAlgorithm):
                 spaces.Discrete,
                 spaces.MultiDiscrete,
                 spaces.MultiBinary,
-                spaces.Dict
+                spaces.Dict,
+                spaces.Tuple,
             ),
         )
 
-        if policy not in ["MultiOutputPolicy", "MIMOPolicy"] and isinstance(self.action_space, spaces.Dict):
-            raise ValueError(f"You must use `MultiOutputPolicy` or `MIMOPolicy` when working with dict action space, "
-                             f"not {policy}")
+        if (policy not in ["MultiOutputPolicy", "MIMOPolicy"]
+            and isinstance(self.action_space, (spaces.Dict, spaces.Tuple))
+        ):
+            raise ValueError(f"You must use `MultiOutputPolicy` or `MIMOPolicy` when working with "
+                             f"dict or tuple action space, not {policy}")
 
         # Sanity check, otherwise it will lead to noisy gradient and NaN
         # because of the advantage normalization
@@ -155,8 +153,8 @@ class MultiOutputPPO(OnPolicyAlgorithm):
             # Check that `n_steps * n_envs > 1` to avoid NaN
             # when doing advantage normalization
             buffer_size = self.env.num_envs * self.n_steps
-            assert (
-                buffer_size > 1
+            assert buffer_size > 1 or (
+                not normalize_advantage
             ), f"`n_steps * n_envs` must be greater than 1. Currently n_steps={self.n_steps} and n_envs={self.env.num_envs}"
             # Check that the rollout buffer size is a multiple of the mini-batch size
             untruncated_batches = buffer_size // batch_size
@@ -215,7 +213,7 @@ class MultiOutputPPO(OnPolicyAlgorithm):
             # Do a complete pass on the rollout buffer
             for rollout_data in self.rollout_buffer.get(self.batch_size):
                 actions = rollout_data.actions
-                # TODO: what to do with Dict space?
+                # TODO: what to do with Dict or Tuple space?
                 if isinstance(self.action_space, spaces.Discrete):
                     # Convert discrete action from float to long
                     actions = rollout_data.actions.long().flatten()
@@ -314,14 +312,14 @@ class MultiOutputPPO(OnPolicyAlgorithm):
             self.logger.record("train/clip_range_vf", clip_range_vf)
 
     def learn(
-            self: SelfMO_PPO,
+            self: SelfMultiOutputPPO,
             total_timesteps: int,
             callback: MaybeCallback = None,
             log_interval: int = 1,
             tb_log_name: str = "MO_PPO",
             reset_num_timesteps: bool = True,
             progress_bar: bool = False,
-    ) -> SelfMO_PPO:
+    ) -> SelfMultiOutputPPO:
         super().learn(
             total_timesteps=total_timesteps,
             callback=callback,
@@ -332,101 +330,4 @@ class MultiOutputPPO(OnPolicyAlgorithm):
         )
         return self
 
-    def collect_rollouts(
-            self,
-            env: VecEnv,
-            callback: BaseCallback,
-            rollout_buffer: RolloutBuffer,
-            n_rollout_steps: int,
-    ) -> bool:
-        """
-        Collect experiences using the current policy and fill a ``RolloutBuffer``.
-        The term rollout here refers to the model-free notion and should not
-        be used with the concept of rollout used in model-based RL or planning.
 
-        :param env: The training environment
-        :param callback: Callback that will be called at each step
-            (and at the beginning and end of the rollout)
-        :param rollout_buffer: Buffer to fill with rollouts
-        :param n_rollout_steps: Number of experiences to collect per environment
-        :return: True if function returned with at least `n_rollout_steps`
-            collected, False if callback terminated rollout prematurely.
-        """
-        assert self._last_obs is not None, "No previous observation was provided"
-        # Switch to eval mode (this affects batch norm / dropout)
-        self.policy.set_training_mode(False)
-
-        n_steps = 0
-        rollout_buffer.reset()
-        # Sample new weights for the state dependent exploration
-        if self.use_sde:
-            self.policy.reset_noise(env.num_envs)
-
-        callback.on_rollout_start()
-
-        while n_steps < n_rollout_steps:
-            if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
-                # Sample a new noise matrix
-                self.policy.reset_noise(env.num_envs)
-
-            with th.no_grad():
-                # Convert to pytorch tensor or to TensorDict
-                obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                actions, values, log_probs = self.policy(obs_tensor)
-            actions = actions.cpu().numpy()
-
-            # Rescale and perform action
-            clipped_actions = actions
-            # Clip the actions to avoid out of bound error
-            if isinstance(self.action_space, (spaces.Box, spaces.Dict)):
-                clipped_actions = clip_actions(actions, self.action_space)
-
-            new_obs, rewards, dones, infos = env.step(clipped_actions)
-
-            self.num_timesteps += env.num_envs
-
-            # Give access to local variables
-            callback.update_locals(locals())
-            if callback.on_step() is False:
-                return False
-
-            self._update_info_buffer(infos)
-            n_steps += 1
-
-            # TODO: what to do for Dict space ?
-            if isinstance(self.action_space, spaces.Discrete):
-                # Reshape in case of discrete action
-                actions = actions.reshape(-1, 1)
-
-            # Handle timeout by bootstraping with value function
-            # see GitHub issue #633
-            for idx, done in enumerate(dones):
-                if (
-                        done
-                        and infos[idx].get("terminal_observation") is not None
-                        and infos[idx].get("TimeLimit.truncated", False)
-                ):
-                    terminal_obs = self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
-                    with th.no_grad():
-                        terminal_value = self.policy.predict_values(terminal_obs)[0]
-                    rewards[idx] += self.gamma * terminal_value
-
-            rollout_buffer.add(
-                self._last_obs,  # type: ignore[arg-type]
-                actions,
-                rewards,
-                self._last_episode_starts,  # type: ignore[arg-type]
-                values, log_probs,
-            )
-            self._last_obs = new_obs  # type: ignore[assignment]
-            self._last_episode_starts = dones
-
-        with th.no_grad():
-            # Compute value for the last timestep
-            values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))  # type: ignore[arg-type]
-
-        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
-
-        callback.on_rollout_end()
-
-        return True
