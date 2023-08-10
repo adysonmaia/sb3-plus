@@ -1,10 +1,15 @@
 from sb3_plus.common.spaces import action_flatdim
 from gymnasium import spaces
-from typing import Any
+from typing import Any, Sequence
 import numpy as np
 
 
 def get_action_dtype(action_space: spaces.Space) -> Any:
+    """
+    Get the action's type
+    :param action_space: action space
+    :return: type
+    """
     if isinstance(action_space, spaces.Dict):
         return np.result_type(*[s.dtype for s in action_space.spaces.values()])
     elif isinstance(action_space, spaces.Tuple):
@@ -13,11 +18,23 @@ def get_action_dtype(action_space: spaces.Space) -> Any:
         return action_space.dtype
 
 
+def get_action_shape(action_space: spaces.Space) -> Sequence[int]:
+    """
+    Get the shape of the action space
+    :param action_space: action space
+    :return: shape
+    """
+    if isinstance(action_space, (spaces.Dict, spaces.Tuple)):
+        return (get_action_dim(action_space),)
+    else:
+        return action_space.shape
+
+
 def get_action_dim(action_space: spaces.Space) -> int:
     """
     Get the dimension of the action space.
-    :param action_space:
-    :return:
+    :param action_space: action space
+    :return: dimension
     """
     return action_flatdim(action_space)
 

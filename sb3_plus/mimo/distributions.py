@@ -79,8 +79,10 @@ class MultiOutputDistribution(sb3.Distribution):
         Returns Shannon's entropy of the probability
         :return: the entropy, or None if no analytical form is known
         """
-        # TODO: handle None returns
-        return th.stack([dist.entropy() for dist in self.distribution], dim=1).sum(dim=1)
+        list_entropies = [dist.entropy() for dist in self.distribution]
+        if None in list_entropies:
+            return None
+        return th.stack(list_entropies, dim=1).sum(dim=1)
 
     def sample(self) -> th.Tensor:
         """

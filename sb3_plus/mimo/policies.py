@@ -1,5 +1,5 @@
 from .distributions import make_proba_distribution, MultiOutputDistribution
-from .preprocessing import scale_actions, unscale_actions, clip_actions
+from .preprocessing import scale_actions, unscale_actions, clip_actions, get_action_shape
 from stable_baselines3.common.type_aliases import Schedule
 from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.torch_layers import (
@@ -241,8 +241,7 @@ class MultiOutputActorCriticPolicy(BasePolicy):
         distribution = self._get_action_dist_from_latent(latent_pi)
         actions = distribution.get_actions(deterministic=deterministic)
         log_prob = distribution.log_prob(actions)
-        # TODO: reshape actions
-        # actions = actions.reshape((-1, *self.action_space.shape))
+        actions = actions.reshape((-1, *get_action_shape(self.action_space)))
         return actions, values, log_prob
 
     def extract_features(self, obs: th.Tensor) -> Union[th.Tensor, Tuple[th.Tensor, th.Tensor]]:
@@ -322,9 +321,7 @@ class MultiOutputActorCriticPolicy(BasePolicy):
         with th.no_grad():
             actions = self._predict(observation, deterministic=deterministic)
         # Convert to numpy, and reshape to the original action shape
-        # actions = actions.cpu().numpy().reshape((-1, *self.action_space.shape))
-        # TODO: reshape actions for Dict space
-        actions = actions.cpu().numpy()
+        actions = actions.cpu().numpy().reshape((-1, *get_action_shape(self.action_space)))
 
         if isinstance(self.action_space, (spaces.Box, spaces.Dict, spaces.Tuple)):
             if self.squash_output:
