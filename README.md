@@ -43,6 +43,14 @@ The following RL algorithms work with MIMO environments
 
 In the following examples, we use a [gymnasium-hybrid](https://github.com/adysonmaia/gymnasium-hybrid) environment composed of hybrid actions.
 
+To install SB3, SB3-Plus, and gymnasium-hybrid with pip, execute:
+
+```
+pip install 'stable-baselines3[extra]' \
+    'git+https://github.com/adysonmaia/sb3-plus#egg=sb3-plus' \
+    'git+https://github.com/adysonmaia/gymnasium-hybrid#egg=gymnasium-hybrid'
+```
+
 **Basic Usage: Training, Saving, Loading**
 ```python
 from sb3_plus import MultiOutputPPO
