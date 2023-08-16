@@ -2,6 +2,7 @@ from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.vec_env import VecEnv
+from stable_baselines3.common.env_util import is_wrapped
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.utils import obs_as_tensor, safe_mean
 from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
@@ -11,6 +12,7 @@ import torch as th
 from .policies import MultiOutputActorCriticPolicy
 from .buffers import MultiOutputRolloutBuffer, MultiOutputDictRolloutBuffer
 from .preprocessing import clip_actions
+from .wrappers import MultiOutputEnv
 
 
 class MultiOutputOnPolicyAlgorithm(OnPolicyAlgorithm):
@@ -122,6 +124,16 @@ class MultiOutputOnPolicyAlgorithm(OnPolicyAlgorithm):
         )
         # pytype:enable=not-instantiable
         self.policy = self.policy.to(self.device)
+
+    @staticmethod
+    def _wrap_env(env: GymEnv, verbose: int = 0, monitor_wrapper: bool = True) -> VecEnv:
+        # Wrapping multi-output environments
+        has_multi_output = isinstance(env.action_space, (spaces.Dict, spaces.Tuple))
+        if has_multi_output and not is_wrapped(env, MultiOutputEnv) and not isinstance(env, VecEnv):
+            if verbose >= 1:
+                print("Wrapping the env with a `MultiOutput` wrapper")
+            env = MultiOutputEnv(env)
+        return OnPolicyAlgorithm._wrap_env(env, verbose, monitor_wrapper)
 
     def collect_rollouts(
             self,
