@@ -136,7 +136,7 @@ class MultiOutputPPO(MultiOutputOnPolicyAlgorithm):
             ),
         )
 
-        if (policy not in ["MultiOutputPolicy", "MIMOPolicy"]
+        if (policy not in ["MultiOutputPolicy", "MIMOPolicy", MultiOutputActorCriticPolicy, MIMOActorCriticPolicy]
             and isinstance(self.action_space, (spaces.Dict, spaces.Tuple))
         ):
             raise ValueError(f"You must use `MultiOutputPolicy` or `MIMOPolicy` when working with "

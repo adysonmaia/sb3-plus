@@ -1,5 +1,6 @@
 from .distributions import make_proba_distribution, MultiOutputDistribution
 from .preprocessing import scale_actions, unscale_actions, clip_actions, get_action_shape
+from sb3_plus.common.spaces import action_unflatten
 from stable_baselines3.common.type_aliases import Schedule
 from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.torch_layers import (
@@ -335,6 +336,10 @@ class MultiOutputActorCriticPolicy(BasePolicy):
         # Remove batch dimension if needed
         if not vectorized_env:
             actions = actions.squeeze(axis=0)
+
+        # Convert from numpy.ndarray to dict or tuple
+        if not vectorized_env and isinstance(self.action_space, (spaces.Dict, spaces.Tuple)):
+            actions = action_unflatten(self.action_space, actions)
 
         return actions, state
 

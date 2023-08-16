@@ -1,5 +1,5 @@
-from stable_baselines3.common import distributions as sb3
 from .preprocessing import get_net_action_dim, get_action_dim
+from stable_baselines3.common import distributions as sb3
 from typing import Dict, Tuple, Any, TypeVar, Union, Optional
 from torch import nn
 from gymnasium import spaces
@@ -70,7 +70,8 @@ class MultiOutputDistribution(sb3.Distribution):
         :return: The log likelihood of the distribution
         """
         split_actions = th.split(actions, self.action_dims, dim=1)
-        log_prob = th.stack([dist.log_prob(action) for dist, action in zip(self.distribution, split_actions)], dim=1)
+        list_log_prob = [dist.log_prob(action) for dist, action in zip(self.distribution, split_actions)]
+        log_prob = th.stack(list_log_prob, dim=1)
         log_prob = log_prob.sum(dim=1)
         return log_prob
 
@@ -154,6 +155,24 @@ class MultiOutputDistribution(sb3.Distribution):
         return actions, log_prob
 
 
+class FlattenCategoricalDistribution(sb3.CategoricalDistribution):
+    """
+    Distribution to categorical actions that consider the dimension of flatten action space
+    """
+    def __init__(self, action_space: spaces.Discrete):
+        super().__init__(action_space.n)
+        self.action_flatdim = get_action_dim(action_space)
+
+    def sample(self) -> th.Tensor:
+        return super().sample().reshape((-1, self.action_flatdim))
+
+    def mode(self) -> th.Tensor:
+        return super().mode().reshape((-1, self.action_flatdim))
+
+    def log_prob(self, actions: th.Tensor) -> th.Tensor:
+        return super().log_prob(actions.squeeze(-1))
+
+
 def make_proba_distribution(action_space: spaces.Space, use_sde: bool = False,
                             dist_kwargs: Optional[Dict[str, Any]] = None) -> sb3.Distribution:
     """
@@ -167,6 +186,8 @@ def make_proba_distribution(action_space: spaces.Space, use_sde: bool = False,
     if isinstance(action_space, (spaces.Dict, spaces.Tuple)):
         assert not use_sde, "Error: StateDependentNoiseDistribution not supported for multi action"
         return MultiOutputDistribution(action_space)
+    elif isinstance(action_space, spaces.Discrete):
+        return FlattenCategoricalDistribution(action_space)
     else:
         return sb3.make_proba_distribution(action_space, use_sde, dist_kwargs)
 
