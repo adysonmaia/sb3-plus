@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sb3-plus"
-version = "0.1.2"
+version = "0.1.3"
 authors = [
   { name="Adyson Maia", email="adyson.maia@gmail.com" },
 ]
@@ -21,3 +21,6 @@ dependencies = [
 
 [project.urls]
 "Homepage" = "https://github.com/adysonmaia/sb3-plus"
+
+[tool.setuptools.packages.find]
+include = ['sb3_plus*']
