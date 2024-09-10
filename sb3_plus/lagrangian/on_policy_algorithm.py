@@ -218,7 +218,7 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
                     terminal_obs = self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
                     with th.no_grad():
                         terminal_value = self.policy.predict_values(terminal_obs)[0]
-                        terminal_penalty_value = self.policy.predict_cost_values(terminal_obs)[0]
+                        terminal_penalty_value = self.policy.predict_penalty_values(terminal_obs)[0]
                     rewards[idx] += self.gamma * terminal_value
                     penalty_costs[idx] += self.gamma * terminal_penalty_value
 
