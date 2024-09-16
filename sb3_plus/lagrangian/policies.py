@@ -13,7 +13,6 @@ from gymnasium import spaces
 from torch import nn
 import numpy as np
 import torch as th
-import itertools
 
 
 class LagActorCriticPolicy(ActorCriticPolicy):
@@ -46,15 +45,11 @@ class LagActorCriticPolicy(ActorCriticPolicy):
         ``th.optim.Adam`` by default
     :param optimizer_kwargs: Additional keyword arguments,
         excluding the learning rate, to pass to the optimizer
-    :param penalty_lr_schedule: Learning rate schedule (could be constant) for penalty optimization
+    :param lag_multiplier_lr_schedule: Learning rate schedule (could be constant) for lagrange multiplier optimization
     """
 
-    pvf_features_extractor: BaseFeaturesExtractor
-    penalty_multiplier_parameter: nn.Parameter
-    penalty_multiplier_net: nn.Module
-    penalty_value_net: nn.Module
-    penalty_lr_schedule: Schedule
-    penalty_optimizer: th.optim.Optimizer
+    cvf_features_extractor: BaseFeaturesExtractor
+    cost_value_net: nn.Module
 
     def __init__(
             self,
@@ -75,10 +70,7 @@ class LagActorCriticPolicy(ActorCriticPolicy):
             normalize_images: bool = True,
             optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
             optimizer_kwargs: Optional[Dict[str, Any]] = None,
-            penalty_lr_schedule: Optional[Schedule] = None,
     ):
-        self.penalty_lr_schedule = penalty_lr_schedule
-
         super().__init__(
             observation_space=observation_space,
             action_space=action_space,
@@ -103,29 +95,26 @@ class LagActorCriticPolicy(ActorCriticPolicy):
         super()._build(lr_schedule)
 
         if self.share_features_extractor:
-            self.pvf_features_extractor = self.features_extractor
+            self.cvf_features_extractor = self.features_extractor
         else:
-            self.pvf_features_extractor = self.make_features_extractor()
+            self.cvf_features_extractor = self.make_features_extractor()
 
-        if self.penalty_lr_schedule is None:
-            self.penalty_lr_schedule = self.lr_schedule
-
-        self.penalty_value_net = nn.Linear(self.mlp_extractor.latent_dim_pvf, 1)
+        self.cost_value_net = nn.Linear(self.mlp_extractor.latent_dim_cvf, 1)
         # Init weights: use orthogonal initialization
         # with small initial weight for the output
         if self.ortho_init:
             module_gains = {
-                self.penalty_value_net: 1,
+                self.cost_value_net: 1,
             }
             if not self.share_features_extractor:
-                module_gains[self.pvf_features_extractor] = np.sqrt(2)
+                module_gains[self.cvf_features_extractor] = np.sqrt(2)
             for module, gain in module_gains.items():
                 module.apply(partial(self.init_weights, gain=gain))
-        self.penalty_multiplier_parameter = nn.Parameter(th.tensor(1.0), requires_grad=True)
-        self.penalty_multiplier_net = nn.Softplus()
-        self.penalty_optimizer = self.optimizer_class(self.penalty_parameters(),
-                                                      lr=self.penalty_lr_schedule(1),
-                                                      **self.optimizer_kwargs)
+
+        # Setup optimizer with initial learning rate and actor-critic parameters, including cost critic/value params
+        self.optimizer = self.optimizer_class(self.parameters(),
+                                              lr=lr_schedule(1),
+                                              **self.optimizer_kwargs)
 
     def _build_mlp_extractor(self) -> None:
         """
@@ -158,40 +147,42 @@ class LagActorCriticPolicy(ActorCriticPolicy):
             pi_features, vf_features, cvf_features = features
             latent_pi = self.mlp_extractor.forward_actor(pi_features)
             latent_vf = self.mlp_extractor.forward_critic(vf_features)
-            latent_pvf = self.mlp_extractor.forward_penalty(cvf_features)
+            latent_pvf = self.mlp_extractor.forward_cost(cvf_features)
         # Evaluate the values for the given observations
         values = self.value_net(latent_vf)
-        penalty_values = self.penalty_value_net(latent_pvf)
+        cost_values = self.cost_value_net(latent_pvf)
         distribution = self._get_action_dist_from_latent(latent_pi)
         actions = distribution.get_actions(deterministic=deterministic)
         log_prob = distribution.log_prob(actions)
         actions = actions.reshape((-1, *self.action_space.shape))
-        return actions, values, penalty_values, log_prob
+        return actions, values, cost_values, log_prob
 
     def evaluate_actions(self, obs: th.Tensor,
-                         actions: th.Tensor) -> Tuple[th.Tensor, th.Tensor, Optional[th.Tensor]]:
+                         actions: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor, Optional[th.Tensor]]:
         """
         Evaluate actions according to the current policy,
         given the observations.
 
         :param obs: Observation
         :param actions: Actions
-        :return: estimated value, estimated penalty value, log likelihood of taking those actions
+        :return: estimated value, estimated cost value, log likelihood of taking those actions
             and entropy of the action distribution.
         """
         # Preprocess the observation if needed
         features = self.extract_features(obs)
         if self.share_features_extractor:
-            latent_pi, latent_vf, _ = self.mlp_extractor(features)
+            latent_pi, latent_vf, latent_cvf = self.mlp_extractor(features)
         else:
-            pi_features, vf_features, _ = features
+            pi_features, vf_features, cvf_features = features
             latent_pi = self.mlp_extractor.forward_actor(pi_features)
             latent_vf = self.mlp_extractor.forward_critic(vf_features)
+            latent_cvf = self.mlp_extractor.forward_cost(cvf_features)
         distribution = self._get_action_dist_from_latent(latent_pi)
         log_prob = distribution.log_prob(actions)
         values = self.value_net(latent_vf)
+        cost_values = self.cost_value_net(latent_cvf)
         entropy = distribution.entropy()
-        return values, log_prob, entropy
+        return values, cost_values, log_prob, entropy
 
     def extract_features(self, obs: th.Tensor) -> Union[th.Tensor, Tuple[th.Tensor, th.Tensor, th.Tensor]]:
         """
@@ -205,36 +196,19 @@ class LagActorCriticPolicy(ActorCriticPolicy):
         else:
             pi_features = BasePolicy.extract_features(self, obs, self.pi_features_extractor)
             vf_features = BasePolicy.extract_features(self, obs, self.vf_features_extractor)
-            pvf_features = BasePolicy.extract_features(self, obs, self.pvf_features_extractor)
-            return pi_features, vf_features, pvf_features
+            cvf_features = BasePolicy.extract_features(self, obs, self.cvf_features_extractor)
+            return pi_features, vf_features, cvf_features
 
-    def predict_penalty_values(self, obs: th.Tensor) -> th.Tensor:
+    def predict_cost_values(self, obs: th.Tensor) -> th.Tensor:
         """
-        Get the estimated penalty values according to the current policy given the observations.
+        Get the estimated cost values according to the current policy given the observations.
 
         :param obs: Observation
-        :return: the estimated penalty values.
+        :return: the estimated values
         """
-        features = BasePolicy.extract_features(self, obs, self.pvf_features_extractor)
-        latent_pvf = self.mlp_extractor.forward_penalty(features)
-        return self.penalty_value_net(latent_pvf)
-
-    def penalty_multiplier(self) -> th.Tensor:
-        """
-        Get Lagrange multiplier as the penalty multiplier
-        :return: the penalty multiplier
-        """
-        return self.penalty_multiplier_net(self.penalty_multiplier_parameter)
-
-    def penalty_parameters(self) -> Iterator[nn.Parameter]:
-        """
-        Get module parameters of penalty
-        :return: parameters
-        """
-        return itertools.chain([self.penalty_multiplier_parameter],
-                               self.penalty_multiplier_net.parameters(),
-                               self.pvf_features_extractor.parameters(),
-                               self.penalty_value_net.parameters())
+        features = BasePolicy.extract_features(self, obs, self.cvf_features_extractor)
+        latent_cvf = self.mlp_extractor.forward_cost(features)
+        return self.cost_value_net(latent_cvf)
 
 
 class LagActorCriticCnnPolicy(LagActorCriticPolicy):
@@ -288,7 +262,6 @@ class LagActorCriticCnnPolicy(LagActorCriticPolicy):
         normalize_images: bool = True,
         optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
         optimizer_kwargs: Optional[Dict[str, Any]] = None,
-        penalty_lr_schedule: Optional[Schedule] = None,
     ):
         super().__init__(
             observation_space,
@@ -308,7 +281,6 @@ class LagActorCriticCnnPolicy(LagActorCriticPolicy):
             normalize_images,
             optimizer_class,
             optimizer_kwargs,
-            penalty_lr_schedule
         )
 
 
@@ -363,7 +335,6 @@ class LagMultiInputActorCriticPolicy(LagActorCriticPolicy):
         normalize_images: bool = True,
         optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
         optimizer_kwargs: Optional[Dict[str, Any]] = None,
-        penalty_lr_schedule: Optional[Schedule] = None,
     ):
         super().__init__(
             observation_space,
@@ -383,5 +354,4 @@ class LagMultiInputActorCriticPolicy(LagActorCriticPolicy):
             normalize_images,
             optimizer_class,
             optimizer_kwargs,
-            penalty_lr_schedule
         )

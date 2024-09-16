@@ -11,12 +11,12 @@ import torch as th
 import warnings
 
 
-SelfLPPO = TypeVar("SelfLPPO", bound="LPPO")
+SelfPPOLag = TypeVar("SelfPPOLag", bound="PPOLag")
 
 
-class LPPO(LagOnPolicyAlgorithm):
+class PPOLag(LagOnPolicyAlgorithm):
     """
-    Lagrangian Proximal Policy Optimization algorithm (LPPO) (clip version)
+    Lagrangian Proximal Policy Optimization algorithm (PPO-Lag) (clip version)
 
     Paper: https://arxiv.org/abs/1707.06347
     Code: This implementation borrows code from OpenAI Spinning Up (https://github.com/openai/spinningup/)
@@ -66,16 +66,17 @@ class LPPO(LagOnPolicyAlgorithm):
     :param device: Device (cpu, cuda, ...) on which the code should be run.
         Setting it to auto, the code will be run on the GPU if possible.
     :param _init_setup_model: Whether or not to build the network at the creation of the instance
+
     :param penalty_learning_rate: The learning rate for penalty, it can be a function
         of the current progress remaining (from 1 to 0)
-    :param clip_range_pvf: Clipping parameter for the cost value function,
+    :param cost_threshold: Cost return threshold
+    :param lag_multiplier_init: Lagrange multiplier initial value
+    :param clip_range_cvf: Clipping parameter for the cost value function,
         it can be a function of the current progress remaining (from 1 to 0).
         This is a parameter specific to the OpenAI implementation. If None is passed (default),
         no clipping will be done on the cost value function.
         IMPORTANT: this clipping depends on the reward scaling.
-    :param penalty_threshold: Penalty return threshold
-    :param pvf_coef: Penalty value function coefficient for the loss calculation
-    :param penalty_n_epochs: Number of epoch when optimizing the surrogate penalty loss
+    :param cvf_coef: Cost value function coefficient for the loss calculation
     """
 
     policy_aliases: ClassVar[Dict[str, Type[BasePolicy]]] = {
@@ -110,11 +111,12 @@ class LPPO(LagOnPolicyAlgorithm):
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
+
         penalty_learning_rate: Union[None, float, Schedule] = None,
-        clip_range_pvf: Union[None, float, Schedule] = None,
-        penalty_threshold: Union[float, Schedule] = 0.0,
-        pvf_coef: float = 0.5,
-        penalty_n_epochs: Optional[int] = None,
+        cost_threshold: Union[float, Schedule] = 0.0,
+        lag_multiplier_init: float = 0.0,
+        clip_range_cvf: Union[None, float, Schedule] = None,
+        cvf_coef: float = 0.5,
     ):
 
         super().__init__(
@@ -142,7 +144,9 @@ class LPPO(LagOnPolicyAlgorithm):
                 spaces.MultiDiscrete,
                 spaces.MultiBinary,
             ),
-            penalty_learning_rate=penalty_learning_rate
+            penalty_learning_rate=penalty_learning_rate,
+            cost_threshold=cost_threshold,
+            lag_multiplier_init=lag_multiplier_init
         )
 
         # Sanity check, otherwise it will lead to noisy gradient and NaN
@@ -176,10 +180,8 @@ class LPPO(LagOnPolicyAlgorithm):
         self.clip_range_vf = clip_range_vf
         self.normalize_advantage = normalize_advantage
         self.target_kl = target_kl
-        self.clip_range_pvf = clip_range_pvf
-        self.penalty_threshold = penalty_threshold
-        self.pvf_coef = pvf_coef
-        self.penalty_n_epochs = penalty_n_epochs if penalty_n_epochs is not None else n_epochs
+        self.clip_range_cvf = clip_range_cvf
+        self.cvf_coef = cvf_coef
 
         if _init_setup_model:
             self._setup_model()
@@ -195,75 +197,16 @@ class LPPO(LagOnPolicyAlgorithm):
 
             self.clip_range_vf = get_schedule_fn(self.clip_range_vf)
 
-        if self.clip_range_pvf is not None:
-            if isinstance(self.clip_range_pvf, (float, int)):
-                assert self.clip_range_pvf > 0, "`clip_range_cvf` must be positive, " "pass `None` to deactivate cvf clipping"
+        if self.clip_range_cvf is not None:
+            if isinstance(self.clip_range_cvf, (float, int)):
+                assert self.clip_range_cvf > 0, "`clip_range_cvf` must be positive, " "pass `None` to deactivate cvf clipping"
 
-            self.clip_range_pvf = get_schedule_fn(self.clip_range_pvf)
+            self.clip_range_cvf = get_schedule_fn(self.clip_range_cvf)
         else:
-            self.clip_range_pvf = self.clip_range_vf
+            self.clip_range_cvf = self.clip_range_vf
 
         # Initialize schedule for penalty threshold
-        self.penalty_threshold = get_schedule_fn(self.penalty_threshold)
-
-    def train_penalty(self) -> None:
-        """
-        Update penalty policy using the currently gathered rollout buffer.
-        """
-        # Switch to train mode (this affects batch norm / dropout)
-        self.policy.set_training_mode(True)
-        # Update optimizer learning rate
-        update_learning_rate(self.policy.penalty_optimizer, self.penalty_lr_schedule(self._current_progress_remaining))
-        # Optional: clip range for the value function
-        if self.clip_range_pvf is not None:
-            clip_range_pvf = self.clip_range_pvf(self._current_progress_remaining)
-
-        # Update penalty threshold
-        penalty_threshold = self.penalty_threshold(self._current_progress_remaining)
-
-        penalty_value_losses = []
-        penalty_multiplier_losses = []
-
-        for epoch in range(self.penalty_n_epochs):
-            # Do a complete pass on the rollout buffer
-            for rollout_data in self.rollout_buffer.get(self.batch_size):
-                penalty_multiplier = self.policy.penalty_multiplier()
-                penalty_return_delta = th.mean(rollout_data.penalty_returns) - penalty_threshold
-                penalty_multiplier_loss = - penalty_multiplier * penalty_return_delta
-                penalty_multiplier_losses.append(penalty_multiplier_loss.item())
-
-                penalty_values = self.policy.predict_penalty_values(rollout_data.observations)
-                penalty_values = penalty_values.flatten()
-                if self.clip_range_pvf is None:
-                    # No clipping
-                    penalty_values_pred = penalty_values
-                else:
-                    # Clip the difference between old and new value
-                    # NOTE: this depends on the reward scaling
-                    penalty_values_pred = rollout_data.old_penalty_values + th.clamp(
-                        penalty_values - rollout_data.old_penalty_values, -clip_range_pvf, clip_range_pvf
-                    )
-                # Value loss using the TD(gae_lambda) target
-                penalty_value_loss = F.mse_loss(rollout_data.penalty_returns, penalty_values_pred)
-                penalty_value_losses.append(penalty_value_loss.item())
-
-                loss = penalty_multiplier_loss + self.pvf_coef * penalty_value_loss
-
-                # Optimization step
-                self.policy.penalty_optimizer.zero_grad()
-                loss.backward()
-                # Clip grad norm
-                th.nn.utils.clip_grad_norm_(self.policy.penalty_parameters(), self.max_grad_norm)
-                self.policy.penalty_optimizer.step()
-
-        # Logs
-        self.logger.record("train_penalty/penalty_multiplier", self.policy.penalty_multiplier().item())
-        self.logger.record("train_penalty/penalty_multiplier_loss", np.mean(penalty_multiplier_losses))
-        self.logger.record("train_penalty/penalty_value_loss", np.mean(penalty_value_losses))
-        self.logger.record("train_penalty/penalty_loss", loss.item())
-        self.logger.record("train_penalty/penalty_threshold", penalty_threshold)
-        if self.clip_range_pvf is not None:
-            self.logger.record("train_penalty/clip_range_pvf", clip_range_pvf)
+        self.cost_threshold = get_schedule_fn(self.cost_threshold)
 
     def train(self) -> None:
         """
@@ -278,9 +221,13 @@ class LPPO(LagOnPolicyAlgorithm):
         # Optional: clip range for the value function
         if self.clip_range_vf is not None:
             clip_range_vf = self.clip_range_vf(self._current_progress_remaining)
+        # Optional: clip range for the cost value function
+        if self.clip_range_cvf is not None:
+            clip_range_cvf = self.clip_range_cvf(self._current_progress_remaining)
 
         entropy_losses = []
         pg_losses, value_losses = [], []
+        cost_value_losses = []
         penalty_losses = []
         clip_fractions = []
 
@@ -299,33 +246,39 @@ class LPPO(LagOnPolicyAlgorithm):
                 if self.use_sde:
                     self.policy.reset_noise(self.batch_size)
 
-                values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
+                values, cost_values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
                 values = values.flatten()
+                cost_values = cost_values.flatten()
+
                 # Normalize advantage
                 advantages = rollout_data.advantages
                 # Normalization does not make sense if mini batchsize == 1, see GH issue #325
                 if self.normalize_advantage and len(advantages) > 1:
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-                penalty_advantages = rollout_data.penalty_advantages
-                if self.normalize_advantage and len(penalty_advantages) > 1:
-                    penalty_advantages = (penalty_advantages - penalty_advantages.mean()) / (penalty_advantages.std() + 1e-8)
+                cost_advantages = rollout_data.cost_advantages
+                if self.normalize_advantage and len(cost_advantages) > 1:
+                    cost_advantages = (cost_advantages - cost_advantages.mean()) / (cost_advantages.std() + 1e-8)
 
                 # ratio between old and new policy, should be one at the first iteration
                 ratio = th.exp(log_prob - rollout_data.old_log_prob)
+                ratio_clipped = th.clamp(ratio, 1 - clip_range, 1 + clip_range)
 
                 # clipped surrogate loss
                 policy_loss_1 = advantages * ratio
-                policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
+                policy_loss_2 = advantages * ratio_clipped
                 policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()
 
-                penalty_loss_1 = penalty_advantages * ratio
-                # penalty_loss_2 = penalty_advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
-                # penalty_loss = th.min(penalty_loss_1, penalty_loss_2).mean()
-                penalty_loss = penalty_loss_1.mean()
-                penalty_multiplier = self.policy.penalty_multiplier().item()
-                penalty_loss = penalty_multiplier * penalty_loss
+                penalty_loss_1 = cost_advantages * ratio
+                penalty_loss_2 = cost_advantages * ratio_clipped
+                penalty_loss = th.min(penalty_loss_1, penalty_loss_2).mean()
+                # penalty_loss = penalty_loss_1.mean()
+                lag_multiplier = self.lagrange.multiplier().item()
+                penalty_loss = lag_multiplier * penalty_loss
                 penalty_losses.append(penalty_loss.item())
+
+                # Scale policy loss to avoid large parameter changes
+                adv_surrogate = (policy_loss + penalty_loss) / (1.0 + lag_multiplier)
 
                 # Logging
                 pg_losses.append(policy_loss.item())
@@ -345,6 +298,19 @@ class LPPO(LagOnPolicyAlgorithm):
                 value_loss = F.mse_loss(rollout_data.returns, values_pred)
                 value_losses.append(value_loss.item())
 
+                if self.clip_range_cvf is None:
+                    # No clipping
+                    cost_values_pred = cost_values
+                else:
+                    # Clip the difference between old and new value
+                    # NOTE: this depends on the reward scaling
+                    cost_values_pred = rollout_data.old_cost_values + th.clamp(
+                        cost_values - rollout_data.old_cost_values, -clip_range_cvf, clip_range_cvf
+                    )
+                # Cost value loss using the TD(gae_lambda) target
+                cost_value_loss = F.mse_loss(rollout_data.cost_returns, cost_values_pred)
+                cost_value_losses.append(cost_value_loss.item())
+
                 # Entropy loss favor exploration
                 if entropy is None:
                     # Approximate entropy when no analytical form
@@ -354,10 +320,10 @@ class LPPO(LagOnPolicyAlgorithm):
 
                 entropy_losses.append(entropy_loss.item())
 
-                # Scale policy loss to avoid large parameter changes
-                policy_penalty_loss = (policy_loss + penalty_loss) / (1.0 + penalty_multiplier)
-                loss = policy_penalty_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
-                # loss = policy_loss + penalty_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
+                loss = (adv_surrogate
+                        + self.ent_coef * entropy_loss
+                        + self.vf_coef * value_loss
+                        + self.cvf_coef * cost_value_loss)
 
                 # Calculate approximate form of reverse KL Divergence for early stopping
                 # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
@@ -402,17 +368,20 @@ class LPPO(LagOnPolicyAlgorithm):
         self.logger.record("train/clip_range", clip_range)
         if self.clip_range_vf is not None:
             self.logger.record("train/clip_range_vf", clip_range_vf)
+        if self.clip_range_cvf is not None:
+            self.logger.record("train_penalty/clip_range_cvf", clip_range_cvf)
+        self.logger.record("train_penalty/cost_value_loss", np.mean(cost_value_losses))
         self.logger.record("train_penalty/penalty_policy_loss", np.mean(penalty_losses))
 
     def learn(
-        self: SelfLPPO,
+        self: SelfPPOLag,
         total_timesteps: int,
         callback: MaybeCallback = None,
         log_interval: int = 1,
-        tb_log_name: str = "LPPO",
+        tb_log_name: str = "PPOLag",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
-    ) -> SelfLPPO:
+    ) -> SelfPPOLag:
         super().learn(
             total_timesteps=total_timesteps,
             callback=callback,

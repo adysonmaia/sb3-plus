@@ -14,10 +14,10 @@ class LagMlpExtractor(MlpExtractor):
     It can be in either of the following forms:
     1. ``dict(vf=[<list of layer sizes>], cvf=[<value layer sizes>], pi=[<list of layer sizes>])``:
         to specify the amount and size of the layers in the
-        policy, penalty/cost and value nets individually. If it is missing any of the keys (pi, pvf or vf),
+        policy, cost and value nets individually. If it is missing any of the keys (pi, cvf or vf),
         zero layers will be considered for that key.
     2. ``[<list of layer sizes>]``: "shortcut" in case the amount and size of the layers
-        in the policy and value nets are the same. Same as ``dict(vf=int_list, pvf=int_list, pi=int_list)``
+        in the policy and value nets are the same. Same as ``dict(vf=int_list, cvf=int_list, pi=int_list)``
         where int_list is the same for the actor and critic.
 
     .. note::
@@ -38,33 +38,33 @@ class LagMlpExtractor(MlpExtractor):
             device: Union[th.device, str] = "auto",
     ) -> None:
         super().__init__(feature_dim, net_arch, activation_fn, device)
-        penalty_value_net: List[nn.Module] = []
-        last_layer_dim_pvf = feature_dim
+        cost_value_net: List[nn.Module] = []
+        last_layer_dim_cvf = feature_dim
 
-        # save dimensions of layers in penalty net
+        # save dimensions of layers in cost net
         if isinstance(net_arch, dict):
             vf_layers_dims = net_arch.get("vf", [])
-            pvf_layers_dims = net_arch.get("pvf", vf_layers_dims)
+            cvf_layers_dims = net_arch.get("cvf", vf_layers_dims)
         else:
-            pvf_layers_dims = net_arch
-        # Iterate through the penalty layers and build the policy net
-        for curr_layer_dim in pvf_layers_dims:
-            penalty_value_net.append(nn.Linear(last_layer_dim_pvf, curr_layer_dim))
-            penalty_value_net.append(activation_fn())
-            last_layer_dim_pvf = curr_layer_dim
+            cvf_layers_dims = net_arch
+        # Iterate through the cost layers and build the policy net
+        for curr_layer_dim in cvf_layers_dims:
+            cost_value_net.append(nn.Linear(last_layer_dim_cvf, curr_layer_dim))
+            cost_value_net.append(activation_fn())
+            last_layer_dim_cvf = curr_layer_dim
 
         # Save dim, used to create the distributions
-        self.latent_dim_pvf = last_layer_dim_pvf
+        self.latent_dim_cvf = last_layer_dim_cvf
         # Create networks
         # If the list of layers is empty, the network will just act as an Identity module
-        self.penalty_value_net = nn.Sequential(*penalty_value_net).to(device)
+        self.cost_value_net = nn.Sequential(*cost_value_net).to(device)
 
     def forward(self, features: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
         """
         :return: latent_policy, latent_value, latent_cost_value of the specified network.
             If all layers are shared, then ``latent_policy == latent_value == latent_cost_value``
         """
-        return self.policy_net(features), self.value_net(features), self.penalty_value_net(features)
+        return self.policy_net(features), self.value_net(features), self.cost_value_net(features)
 
-    def forward_penalty(self, features: th.Tensor) -> th.Tensor:
-        return self.penalty_value_net(features)
+    def forward_cost(self, features: th.Tensor) -> th.Tensor:
+        return self.cost_value_net(features)

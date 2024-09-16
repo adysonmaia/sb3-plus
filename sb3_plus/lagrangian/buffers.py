@@ -39,10 +39,10 @@ class LagRolloutBuffer(BaseBuffer):
     log_probs: np.ndarray
     values: np.ndarray
 
-    penalty_costs: np.ndarray
-    penalty_returns: np.ndarray
-    penalty_advantages: np.ndarray
-    penalty_values: np.ndarray
+    costs: np.ndarray
+    cost_returns: np.ndarray
+    cost_advantages: np.ndarray
+    cost_values: np.ndarray
 
     def __init__(
         self,
@@ -70,14 +70,14 @@ class LagRolloutBuffer(BaseBuffer):
         self.values = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.log_probs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        self.penalty_costs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        self.penalty_returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        self.penalty_advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        self.penalty_values = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.costs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.cost_returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.cost_advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.cost_values = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.generator_ready = False
         super().reset()
 
-    def compute_returns_and_advantage(self, last_values: th.Tensor, last_penalty_values: th.Tensor, dones: np.ndarray) -> None:
+    def compute_returns_and_advantage(self, last_values: th.Tensor, last_cost_values: th.Tensor, dones: np.ndarray) -> None:
         """
         Post-processing step: compute the lambda-return (TD(lambda) estimate)
         and GAE(lambda) advantage.
@@ -94,56 +94,57 @@ class LagRolloutBuffer(BaseBuffer):
         For more information, see discussion in https://github.com/DLR-RM/stable-baselines3/pull/375.
 
         :param last_values: state value estimation for the last step (one for each env)
-        :param last_penalty_values: penalty value estimation for the last step (one for each env)
+        :param last_cost_values: cost value estimation for the last step (one for each env)
         :param dones: if the last step was a terminal step (one bool for each env).
         """
         # Convert to numpy
         last_values = last_values.clone().cpu().numpy().flatten()
-        last_penalty_values = last_penalty_values.clone().cpu().numpy().flatten()
+        last_cost_values = last_cost_values.clone().cpu().numpy().flatten()
 
         last_gae_lam = 0
-        last_penalty_gae_lam = 0
+        last_cost_gae_lam = 0
         for step in reversed(range(self.buffer_size)):
             if step == self.buffer_size - 1:
                 next_non_terminal = 1.0 - dones
                 next_values = last_values
-                next_penalty_values = last_penalty_values
+                next_cost_values = last_cost_values
             else:
                 next_non_terminal = 1.0 - self.episode_starts[step + 1]
                 next_values = self.values[step + 1]
-                next_penalty_values = self.penalty_values[step + 1]
+                next_cost_values = self.cost_values[step + 1]
             delta = self.rewards[step] + self.gamma * next_values * next_non_terminal - self.values[step]
             last_gae_lam = delta + self.gamma * self.gae_lambda * next_non_terminal * last_gae_lam
             self.advantages[step] = last_gae_lam
 
-            cost_delta = self.penalty_costs[step] + self.gamma * next_penalty_values * next_non_terminal - self.penalty_values[step]
-            last_penalty_gae_lam = cost_delta + self.gamma * self.gae_lambda * next_non_terminal * last_penalty_gae_lam
-            self.penalty_advantages[step] = last_penalty_gae_lam
+            cost_delta = self.costs[step] + self.gamma * next_cost_values * next_non_terminal - self.cost_values[step]
+            last_cost_gae_lam = cost_delta + self.gamma * self.gae_lambda * next_non_terminal * last_cost_gae_lam
+            self.cost_advantages[step] = last_cost_gae_lam
+
         # TD(lambda) estimator, see Github PR #375 or "Telescoping in TD(lambda)"
         # in David Silver Lecture 4: https://www.youtube.com/watch?v=PnHCvfgC_ZA
         self.returns = self.advantages + self.values
-        self.penalty_returns = self.penalty_advantages + self.penalty_values
+        self.cost_returns = self.cost_advantages + self.cost_values
 
     def add(
         self,
         obs: np.ndarray,
         action: np.ndarray,
         reward: np.ndarray,
-        penalty_cost: np.ndarray,
+        cost: np.ndarray,
         episode_start: np.ndarray,
         value: th.Tensor,
-        penalty_value: th.Tensor,
+        cost_value: th.Tensor,
         log_prob: th.Tensor,
     ) -> None:
         """
         :param obs: Observation
         :param action: Action
         :param reward:
-        :param penalty_cost: penalty cost
+        :param cost: penalty cost
         :param episode_start: Start of episode signal.
         :param value: estimated value of the current state
             following the current policy.
-        :param penalty_value: estimated penalty value of the current state
+        :param cost_value: estimated cost value of the current state
             following the current policy.
         :param log_prob: log probability of the action
             following the current policy.
@@ -166,8 +167,8 @@ class LagRolloutBuffer(BaseBuffer):
         self.episode_starts[self.pos] = np.array(episode_start).copy()
         self.values[self.pos] = value.clone().cpu().numpy().flatten()
         self.log_probs[self.pos] = log_prob.clone().cpu().numpy()
-        self.penalty_costs[self.pos] = np.array(penalty_cost).copy()
-        self.penalty_values[self.pos] = penalty_value.clone().cpu().numpy().flatten()
+        self.costs[self.pos] = np.array(cost).copy()
+        self.cost_values[self.pos] = cost_value.clone().cpu().numpy().flatten()
         self.pos += 1
         if self.pos == self.buffer_size:
             self.full = True
@@ -184,9 +185,9 @@ class LagRolloutBuffer(BaseBuffer):
                 "log_probs",
                 "advantages",
                 "returns",
-                'penalty_values',
-                "penalty_returns",
-                "penalty_advantages",
+                'cost_values',
+                "cost_returns",
+                "cost_advantages",
             ]
 
             for tensor in _tensor_names:
@@ -214,9 +215,9 @@ class LagRolloutBuffer(BaseBuffer):
             self.log_probs[batch_inds].flatten(),
             self.advantages[batch_inds].flatten(),
             self.returns[batch_inds].flatten(),
-            self.penalty_values[batch_inds].flatten(),
-            self.penalty_returns[batch_inds].flatten(),
-            self.penalty_advantages[batch_inds].flatten(),
+            self.cost_values[batch_inds].flatten(),
+            self.cost_returns[batch_inds].flatten(),
+            self.cost_advantages[batch_inds].flatten(),
         )
         return LagRolloutBufferSamples(*tuple(map(self.to_torch, data)))
 
@@ -274,21 +275,21 @@ class LagDictRolloutBuffer(LagRolloutBuffer):
         obs: Dict[str, np.ndarray],
         action: np.ndarray,
         reward: np.ndarray,
-        penalty_cost: np.ndarray,
+        cost: np.ndarray,
         episode_start: np.ndarray,
         value: th.Tensor,
-        penalty_value: th.Tensor,
+        cost_value: th.Tensor,
         log_prob: th.Tensor,
     ) -> None:  # pytype: disable=signature-mismatch
         """
         :param obs: Observation
         :param action: Action
         :param reward:
-        :param penalty_cost: penalty cost
+        :param cost: penalty cost
         :param episode_start: Start of episode signal.
         :param value: estimated value of the current state
             following the current policy.
-        :param penalty_value: estimated penalty value of the current state
+        :param cost_value: estimated cost value of the current state
             following the current policy.
         :param log_prob: log probability of the action
             following the current policy.
@@ -313,8 +314,8 @@ class LagDictRolloutBuffer(LagRolloutBuffer):
         self.episode_starts[self.pos] = np.array(episode_start).copy()
         self.values[self.pos] = value.clone().cpu().numpy().flatten()
         self.log_probs[self.pos] = log_prob.clone().cpu().numpy()
-        self.penalty_costs[self.pos] = np.array(penalty_cost).copy()
-        self.penalty_values[self.pos] = penalty_value.clone().cpu().numpy().flatten()
+        self.costs[self.pos] = np.array(cost).copy()
+        self.cost_values[self.pos] = cost_value.clone().cpu().numpy().flatten()
         self.pos += 1
         if self.pos == self.buffer_size:
             self.full = True
@@ -331,7 +332,7 @@ class LagDictRolloutBuffer(LagRolloutBuffer):
                 self.observations[key] = self.swap_and_flatten(obs)
 
             _tensor_names = ["actions", "values", "log_probs", "advantages", "returns",
-                             'penalty_values', "penalty_returns", "penalty_advantages"]
+                             'cost_values', "cost_returns", "cost_advantages"]
 
             for tensor in _tensor_names:
                 self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])
@@ -343,7 +344,7 @@ class LagDictRolloutBuffer(LagRolloutBuffer):
 
         start_idx = 0
         while start_idx < self.buffer_size * self.n_envs:
-            yield self._get_samples(indices[start_idx : start_idx + batch_size])
+            yield self._get_samples(indices[start_idx: start_idx + batch_size])
             start_idx += batch_size
 
     def _get_samples(
@@ -358,7 +359,7 @@ class LagDictRolloutBuffer(LagRolloutBuffer):
             old_log_prob=self.to_torch(self.log_probs[batch_inds].flatten()),
             advantages=self.to_torch(self.advantages[batch_inds].flatten()),
             returns=self.to_torch(self.returns[batch_inds].flatten()),
-            old_penalty_values=self.to_torch(self.penalty_values[batch_inds].flatten()),
-            penalty_returns=self.to_torch(self.penalty_returns[batch_inds].flatten()),
-            penalty_advantages=self.to_torch(self.penalty_advantages[batch_inds].flatten())
+            old_cost_values=self.to_torch(self.cost_values[batch_inds].flatten()),
+            cost_returns=self.to_torch(self.cost_returns[batch_inds].flatten()),
+            cost_advantages=self.to_torch(self.cost_advantages[batch_inds].flatten())
         )

@@ -11,9 +11,9 @@ class LagRolloutBufferSamples(NamedTuple):
     old_log_prob: th.Tensor
     advantages: th.Tensor
     returns: th.Tensor
-    old_penalty_values: th.Tensor
-    penalty_returns: th.Tensor
-    penalty_advantages: th.Tensor
+    old_cost_values: th.Tensor
+    cost_returns: th.Tensor
+    cost_advantages: th.Tensor
 
 
 class LagDictRolloutBufferSamples(NamedTuple):
@@ -23,6 +23,6 @@ class LagDictRolloutBufferSamples(NamedTuple):
     old_log_prob: th.Tensor
     advantages: th.Tensor
     returns: th.Tensor
-    old_penalty_values: th.Tensor
-    penalty_returns: th.Tensor
-    penalty_advantages: th.Tensor
+    old_cost_values: th.Tensor
+    cost_returns: th.Tensor
+    cost_advantages: th.Tensor

@@ -1,9 +1,10 @@
 from .buffers import LagRolloutBuffer, LagDictRolloutBuffer
 from .policies import LagActorCriticPolicy
+from .lagrange import Lagrange
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
-from stable_baselines3.common.utils import obs_as_tensor, safe_mean, get_schedule_fn
+from stable_baselines3.common.utils import obs_as_tensor, safe_mean, get_schedule_fn, update_learning_rate
 from stable_baselines3.common.vec_env import VecEnv
 from gymnasium import spaces
 from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
@@ -12,8 +13,8 @@ import torch as th
 import sys
 import time
 
-
 PENALTY_COST_INFO_KEY = "cost"
+
 SelfLagOnPolicyAlgorithm = TypeVar("SelfLagOnPolicyAlgorithm", bound="LagOnPolicyAlgorithm")
 
 
@@ -50,9 +51,13 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
         Setting it to auto, the code will be run on the GPU if possible.
     :param _init_setup_model: Whether or not to build the network at the creation of the instance
     :param supported_action_spaces: The action spaces supported by the algorithm.
-    :param penalty_learning_rate: The learning rate for penalty, it can be a function
+    :param penalty_learning_rate: The learning rate for lagrange multiplier, it can be a function
+        of the current progress remaining (from 1 to 0)
+    :param cost_value_learning_rate: The learning rate for cost critic/value, it can be a function
         of the current progress remaining (from 1 to 0)
     """
+
+    lagrange: Lagrange
 
     def __init__(
         self,
@@ -76,7 +81,10 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
         supported_action_spaces: Optional[Tuple[Type[spaces.Space], ...]] = None,
+
         penalty_learning_rate: Union[None, float, Schedule] = None,
+        cost_threshold: Union[float, Schedule] = 0.0,
+        lag_multiplier_init: float = 0.0
     ):
 
         super().__init__(
@@ -93,6 +101,7 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
             stats_window_size=stats_window_size,
             tensorboard_log=tensorboard_log,
             supported_action_spaces=supported_action_spaces,
+            monitor_wrapper=monitor_wrapper
         )
 
         self.n_steps = n_steps
@@ -102,17 +111,19 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
         self.vf_coef = vf_coef
         self.max_grad_norm = max_grad_norm
         self.rollout_buffer = None
+
         self.penalty_learning_rate = penalty_learning_rate
+        self.cost_threshold = cost_threshold
+        self.lag_multiplier_init = lag_multiplier_init
+
+        self._ep_cost_buffer: List[float] = []
+        self._ep_cost_cumsum: Optional[np.ndarray] = None
 
         if _init_setup_model:
             self._setup_model()
 
     def _setup_model(self) -> None:
         self._setup_lr_schedule()
-        if self.penalty_learning_rate is None:
-            self.penalty_lr_schedule = self.lr_schedule
-        else:
-            self.penalty_lr_schedule = get_schedule_fn(self.penalty_learning_rate)
         self.set_random_seed(self.seed)
 
         buffer_cls = LagDictRolloutBuffer if isinstance(self.observation_space, spaces.Dict) else LagRolloutBuffer
@@ -131,12 +142,21 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
             self.observation_space,
             self.action_space,
             self.lr_schedule,
-            penalty_lr_schedule=self.penalty_lr_schedule,
             use_sde=self.use_sde,
             **self.policy_kwargs
         )
         # pytype:enable=not-instantiable
         self.policy = self.policy.to(self.device)
+
+        if self.penalty_learning_rate is None:
+            penalty_learning_rate = self.learning_rate
+        self.lagrange = Lagrange(
+            cost_threshold=self.cost_threshold,
+            multiplier_init=self.lag_multiplier_init,
+            learning_rate=self.penalty_learning_rate,
+            optimizer_class=self.policy.optimizer_class,
+            optimizer_kwargs=self.policy.optimizer_kwargs
+        )
 
     def collect_rollouts(
         self,
@@ -178,7 +198,7 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                actions, values, penalty_values, log_probs = self.policy(obs_tensor)
+                actions, values, cost_values, log_probs = self.policy(obs_tensor)
             actions = actions.cpu().numpy()
 
             # Rescale and perform action
@@ -203,12 +223,12 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
                 # Reshape in case of discrete action
                 actions = actions.reshape(-1, 1)
 
-            penalty_costs = np.zeros(shape=rewards.shape, dtype=np.float32)
+            costs = np.zeros(shape=rewards.shape, dtype=np.float32)
 
             # Handle timeout by bootstraping with value function
             # see GitHub issue #633
             for idx, done in enumerate(dones):
-                penalty_costs[idx] = infos[idx].get(PENALTY_COST_INFO_KEY, 0.0)
+                costs[idx] = infos[idx].get(PENALTY_COST_INFO_KEY, 0.0)
 
                 if (
                     done
@@ -218,18 +238,24 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
                     terminal_obs = self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
                     with th.no_grad():
                         terminal_value = self.policy.predict_values(terminal_obs)[0]
-                        terminal_penalty_value = self.policy.predict_penalty_values(terminal_obs)[0]
+                        terminal_cost_value = self.policy.predict_cost_values(terminal_obs)[0]
                     rewards[idx] += self.gamma * terminal_value
-                    penalty_costs[idx] += self.gamma * terminal_penalty_value
+                    # TODO: check if need to do this for cost
+                    # costs[idx] += self.gamma * terminal_cost_value
+
+                self._ep_cost_cumsum[idx] += costs[idx]
+                if done:
+                    self._ep_cost_buffer.append(self._ep_cost_cumsum[idx])
+                    self._ep_cost_cumsum[idx] = 0
 
             rollout_buffer.add(
                 self._last_obs,  # type: ignore[arg-type]
                 actions,
                 rewards,
-                penalty_costs,
+                costs,
                 self._last_episode_starts,  # type: ignore[arg-type]
                 values,
-                penalty_values,
+                cost_values,
                 log_probs)
             self._last_obs = new_obs  # type: ignore[assignment]
             self._last_episode_starts = dones
@@ -237,11 +263,11 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
         with th.no_grad():
             # Compute value for the last timestep
             values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))  # type: ignore[arg-type]
-            penalty_values = self.policy.predict_penalty_values(obs_as_tensor(new_obs, self.device))
+            cost_values = self.policy.predict_cost_values(obs_as_tensor(new_obs, self.device))
 
         rollout_buffer.compute_returns_and_advantage(
             last_values=values,
-            last_penalty_values=penalty_values,
+            last_cost_values=cost_values,
             dones=dones
         )
 
@@ -256,12 +282,18 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
         """
         raise NotImplementedError
 
-    def train_penalty(self) -> None:
+    def train_penalty(self, mean_ep_cost: float) -> None:
         """
-        Consume current rollout data and update penalty policy parameters.
-        Implemented by individual algorithms.
+        Update penalty policy parameters based on mean episode cost of current rollout data
+
+        :param mean_ep_cost: mean episode cost
         """
-        raise NotImplementedError
+        loss = self.lagrange.train_multiplier(mean_ep_cost, self._current_progress_remaining)
+
+        # Logs
+        self.logger.record("train_penalty/lag_multiplier", self.lagrange.multiplier().item())
+        self.logger.record("train_penalty/lag_multiplier_loss", loss.item())
+        self.logger.record("train_penalty/cost_threshold", self.lagrange.cost_threshold)
 
     def learn(
         self: SelfLagOnPolicyAlgorithm,
@@ -286,7 +318,13 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
 
         assert self.env is not None
 
+        if isinstance(self.env, VecEnv):
+            self._ep_cost_cumsum = np.zeros(self.env.num_envs, dtype=np.float32)
+        else:
+            self._ep_cost_cumsum = np.zeros(1, dtype=np.float32)
+
         while self.num_timesteps < total_timesteps:
+            self._ep_cost_buffer = []
 
             continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps)
 
@@ -295,6 +333,7 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
 
             iteration += 1
             self._update_current_progress_remaining(self.num_timesteps, total_timesteps)
+            mean_ep_cost = float(safe_mean(self._ep_cost_buffer))
 
             # Display training infos
             if log_interval is not None and iteration % log_interval == 0:
@@ -304,14 +343,15 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
                 self.logger.record("time/iterations", iteration, exclude="tensorboard")
                 if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
                     self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                    self.logger.record("rollout/ep_cost_mean", safe_mean(self.rollout_buffer.penalty_returns))
+                    # TODO : improve this log
+                    self.logger.record("rollout/ep_cost_mean", mean_ep_cost)
                     self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                 self.logger.record("time/fps", fps)
                 self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
                 self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
                 self.logger.dump(step=self.num_timesteps)
 
-            self.train_penalty()
+            self.train_penalty(mean_ep_cost)
             self.train()
 
         callback.on_training_end()
@@ -319,6 +359,6 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
         return self
 
     def _get_torch_save_params(self) -> Tuple[List[str], List[str]]:
-        state_dicts = ["policy", "policy.optimizer"]
+        state_dicts = ["policy", "policy.optimizer", "lagrange.optimizer"]
 
         return state_dicts, []
