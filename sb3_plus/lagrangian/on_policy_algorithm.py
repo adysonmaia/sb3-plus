@@ -258,13 +258,15 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
             self._current_costs += costs
             self._current_cost_returns += costs * np.power(self.cost_gamma, self._current_env_steps)
             self._current_env_steps += 1
-            dones_bool = dones.astype(bool)
-            if np.any(dones_bool):
-                self._ep_costs.extend(self._current_costs[dones_bool])
-                self._ep_cost_returns.extend(self._current_cost_returns[dones_bool])
-                self._current_costs *= dones
-                self._current_cost_returns *= dones
-                self._current_env_steps *= dones
+            dones_mask = dones.astype(bool)
+            if np.any(dones_mask):
+                self._ep_costs.extend(self._current_costs[dones_mask])
+                self._ep_cost_returns.extend(self._current_cost_returns[dones_mask])
+                # reset dones environments
+                not_dones = 1 - dones
+                self._current_costs *= not_dones
+                self._current_cost_returns *= not_dones
+                self._current_env_steps *= not_dones
 
             rollout_buffer.add(
                 self._last_obs,  # type: ignore[arg-type]
