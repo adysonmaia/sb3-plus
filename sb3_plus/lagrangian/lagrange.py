@@ -53,9 +53,9 @@ class Lagrange:
         """
         return self.multiplier_net()
 
-    def train_multiplier(self, mean_ep_cost: float, current_progress_remaining: float) -> th.Tensor:
+    def update_multiplier(self, mean_ep_cost: float, current_progress_remaining: float) -> th.Tensor:
         """
-        Train the lagrange multiplier (lambda) based on episode cost
+        Update the lagrange multiplier (lambda) based on episode cost
         :param mean_ep_cost: mean episode cost
         :param current_progress_remaining:
         :return: penalty loss

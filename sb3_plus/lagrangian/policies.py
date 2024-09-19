@@ -142,15 +142,15 @@ class LagActorCriticPolicy(ActorCriticPolicy):
         # Preprocess the observation if needed
         features = self.extract_features(obs)
         if self.share_features_extractor:
-            latent_pi, latent_vf, latent_pvf = self.mlp_extractor(features)
+            latent_pi, latent_vf, latent_cvf = self.mlp_extractor(features)
         else:
             pi_features, vf_features, cvf_features = features
             latent_pi = self.mlp_extractor.forward_actor(pi_features)
             latent_vf = self.mlp_extractor.forward_critic(vf_features)
-            latent_pvf = self.mlp_extractor.forward_cost(cvf_features)
+            latent_cvf = self.mlp_extractor.forward_cost(cvf_features)
         # Evaluate the values for the given observations
         values = self.value_net(latent_vf)
-        cost_values = self.cost_value_net(latent_pvf)
+        cost_values = self.cost_value_net(latent_cvf)
         distribution = self._get_action_dist_from_latent(latent_pi)
         actions = distribution.get_actions(deterministic=deterministic)
         log_prob = distribution.log_prob(actions)

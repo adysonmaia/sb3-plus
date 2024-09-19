@@ -28,6 +28,8 @@ class LagRolloutBuffer(BaseBuffer):
         Equivalent to classic advantage when set to 1.
     :param gamma: Discount factor
     :param n_envs: Number of parallel environments
+    :param cost_gae_lambda: GAE lambda for cost advantage estimations
+    :param cost_gamma: Discount factor for cost returns
     """
 
     observations: np.ndarray
@@ -53,12 +55,16 @@ class LagRolloutBuffer(BaseBuffer):
         gae_lambda: float = 1,
         gamma: float = 0.99,
         n_envs: int = 1,
+        cost_gae_lambda: Optional[float] = None,
+        cost_gamma: Optional[float] = None
     ):
 
         super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
         self.gae_lambda = gae_lambda
         self.gamma = gamma
         self.generator_ready = False
+        self.cost_gae_lambda = cost_gae_lambda if cost_gae_lambda is not None else self.gae_lambda
+        self.cost_gamma = cost_gamma if cost_gamma is not None else self.gamma
         self.reset()
 
     def reset(self) -> None:
@@ -116,8 +122,8 @@ class LagRolloutBuffer(BaseBuffer):
             last_gae_lam = delta + self.gamma * self.gae_lambda * next_non_terminal * last_gae_lam
             self.advantages[step] = last_gae_lam
 
-            cost_delta = self.costs[step] + self.gamma * next_cost_values * next_non_terminal - self.cost_values[step]
-            last_cost_gae_lam = cost_delta + self.gamma * self.gae_lambda * next_non_terminal * last_cost_gae_lam
+            cost_delta = self.costs[step] + self.cost_gamma * next_cost_values * next_non_terminal - self.cost_values[step]
+            last_cost_gae_lam = cost_delta + self.cost_gamma * self.cost_gae_lambda * next_non_terminal * last_cost_gae_lam
             self.cost_advantages[step] = last_cost_gae_lam
 
         # TD(lambda) estimator, see Github PR #375 or "Telescoping in TD(lambda)"
@@ -245,6 +251,8 @@ class LagDictRolloutBuffer(LagRolloutBuffer):
         Equivalent to Monte-Carlo advantage estimate when set to 1.
     :param gamma: Discount factor
     :param n_envs: Number of parallel environments
+    :param cost_gae_lambda: GAE lambda for cost advantage estimations
+    :param cost_gamma: Discount factor for cost returns
     """
 
     observations: Dict[str, np.ndarray]
@@ -258,8 +266,20 @@ class LagDictRolloutBuffer(LagRolloutBuffer):
         gae_lambda: float = 1,
         gamma: float = 0.99,
         n_envs: int = 1,
+        cost_gae_lambda: Optional[float] = None,
+        cost_gamma: Optional[float] = None
     ):
-        super().__init__(buffer_size, observation_space, action_space, device, gae_lambda, gamma, n_envs=n_envs)
+        super().__init__(
+            buffer_size,
+            observation_space,
+            action_space,
+            device,
+            gae_lambda,
+            gamma,
+            n_envs=n_envs,
+            cost_gae_lambda=cost_gae_lambda,
+            cost_gamma=cost_gamma
+        )
         assert isinstance(self.obs_shape, dict), "DictRolloutBuffer must be used with Dict obs space only"
         self.reset()
 

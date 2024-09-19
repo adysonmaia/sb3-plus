@@ -51,10 +51,14 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
         Setting it to auto, the code will be run on the GPU if possible.
     :param _init_setup_model: Whether or not to build the network at the creation of the instance
     :param supported_action_spaces: The action spaces supported by the algorithm.
+
     :param penalty_learning_rate: The learning rate for lagrange multiplier, it can be a function
         of the current progress remaining (from 1 to 0)
-    :param cost_value_learning_rate: The learning rate for cost critic/value, it can be a function
-        of the current progress remaining (from 1 to 0)
+    :param cost_threshold: cost threshold
+    :param lag_multiplier_init: initial value for lagrange multiplier
+    :param cost_gae_lambda: GAE lambda for cost advantage estimations
+    :param cost_gamma: Discount factor for cost returns
+
     """
 
     lagrange: Lagrange
@@ -84,7 +88,9 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
 
         penalty_learning_rate: Union[None, float, Schedule] = None,
         cost_threshold: Union[float, Schedule] = 0.0,
-        lag_multiplier_init: float = 0.0
+        lag_multiplier_init: float = 0.0,
+        cost_gae_lambda: Optional[float] = None,
+        cost_gamma: Optional[float] = None
     ):
 
         super().__init__(
@@ -115,9 +121,14 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
         self.penalty_learning_rate = penalty_learning_rate
         self.cost_threshold = cost_threshold
         self.lag_multiplier_init = lag_multiplier_init
+        self.cost_gae_lambda = cost_gae_lambda if cost_gae_lambda is not None else self.gae_lambda
+        self.cost_gamma = cost_gamma if cost_gamma is not None else self.gamma
 
-        self._ep_cost_buffer: List[float] = []
-        self._ep_cost_cumsum: Optional[np.ndarray] = None
+        self._ep_costs: List[float] = []
+        self._ep_cost_returns: List[float] = []
+        self._current_costs: Optional[np.ndarray] = None
+        self._current_cost_returns: Optional[np.ndarray] = None
+        self._current_env_steps: Optional[np.ndarray] = None
 
         if _init_setup_model:
             self._setup_model()
@@ -136,6 +147,8 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
             gamma=self.gamma,
             gae_lambda=self.gae_lambda,
             n_envs=self.n_envs,
+            cost_gamma=self.cost_gamma,
+            cost_gae_lambda=self.cost_gae_lambda
         )
         # pytype:disable=not-instantiable
         self.policy = self.policy_class(  # type: ignore[assignment]
@@ -149,7 +162,7 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
         self.policy = self.policy.to(self.device)
 
         if self.penalty_learning_rate is None:
-            penalty_learning_rate = self.learning_rate
+            self.penalty_learning_rate = self.learning_rate
         self.lagrange = Lagrange(
             cost_threshold=self.cost_threshold,
             multiplier_init=self.lag_multiplier_init,
@@ -240,13 +253,18 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
                         terminal_value = self.policy.predict_values(terminal_obs)[0]
                         terminal_cost_value = self.policy.predict_cost_values(terminal_obs)[0]
                     rewards[idx] += self.gamma * terminal_value
-                    # TODO: check if need to do this for cost
-                    # costs[idx] += self.gamma * terminal_cost_value
+                    costs[idx] += self.cost_gamma * terminal_cost_value
 
-                self._ep_cost_cumsum[idx] += costs[idx]
-                if done:
-                    self._ep_cost_buffer.append(self._ep_cost_cumsum[idx])
-                    self._ep_cost_cumsum[idx] = 0
+            self._current_costs += costs
+            self._current_cost_returns += costs * np.power(self.cost_gamma, self._current_env_steps)
+            self._current_env_steps += 1
+            dones_bool = dones.astype(bool)
+            if np.any(dones_bool):
+                self._ep_costs.extend(self._current_costs[dones_bool])
+                self._ep_cost_returns.extend(self._current_cost_returns[dones_bool])
+                self._current_costs *= dones
+                self._current_cost_returns *= dones
+                self._current_env_steps *= dones
 
             rollout_buffer.add(
                 self._last_obs,  # type: ignore[arg-type]
@@ -282,13 +300,17 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
         """
         raise NotImplementedError
 
-    def train_penalty(self, mean_ep_cost: float) -> None:
+    def train_penalty(self) -> None:
         """
         Update penalty policy parameters based on mean episode cost of current rollout data
 
-        :param mean_ep_cost: mean episode cost
         """
-        loss = self.lagrange.train_multiplier(mean_ep_cost, self._current_progress_remaining)
+        mean_ep_cost = 0.0
+        if len(self._ep_cost_returns) > 0:
+            # mean_ep_cost = float(safe_mean(self._ep_costs))
+            mean_ep_cost = float(safe_mean(self._ep_cost_returns))
+
+        loss = self.lagrange.update_multiplier(mean_ep_cost, self._current_progress_remaining)
 
         # Logs
         self.logger.record("train_penalty/lag_multiplier", self.lagrange.multiplier().item())
@@ -318,13 +340,16 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
 
         assert self.env is not None
 
+        num_envs = 1
         if isinstance(self.env, VecEnv):
-            self._ep_cost_cumsum = np.zeros(self.env.num_envs, dtype=np.float32)
-        else:
-            self._ep_cost_cumsum = np.zeros(1, dtype=np.float32)
+            num_envs = self.env.num_envs
+        self._current_costs = np.zeros(num_envs, dtype=np.float32)
+        self._current_cost_returns = np.zeros(num_envs, dtype=np.float32)
+        self._current_env_steps = np.zeros(num_envs, dtype=np.float32)
 
         while self.num_timesteps < total_timesteps:
-            self._ep_cost_buffer = []
+            self._ep_costs = []
+            self._ep_cost_returns = []
 
             continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps)
 
@@ -333,7 +358,6 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
 
             iteration += 1
             self._update_current_progress_remaining(self.num_timesteps, total_timesteps)
-            mean_ep_cost = float(safe_mean(self._ep_cost_buffer))
 
             # Display training infos
             if log_interval is not None and iteration % log_interval == 0:
@@ -343,15 +367,15 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
                 self.logger.record("time/iterations", iteration, exclude="tensorboard")
                 if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
                     self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                    # TODO : improve this log
-                    self.logger.record("rollout/ep_cost_mean", mean_ep_cost)
+                    self.logger.record("rollout/ep_cost_mean", safe_mean(self._ep_costs))
+                    self.logger.record("rollout/ep_cost_r_mean", safe_mean(self._ep_cost_returns))
                     self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                 self.logger.record("time/fps", fps)
                 self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
                 self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
                 self.logger.dump(step=self.num_timesteps)
 
-            self.train_penalty(mean_ep_cost)
+            self.train_penalty()
             self.train()
 
         callback.on_training_end()

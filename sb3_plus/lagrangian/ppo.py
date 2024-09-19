@@ -77,6 +77,8 @@ class PPOLag(LagOnPolicyAlgorithm):
         no clipping will be done on the cost value function.
         IMPORTANT: this clipping depends on the reward scaling.
     :param cvf_coef: Cost value function coefficient for the loss calculation
+    :param cost_gae_lambda: GAE lambda for cost advantage estimations
+    :param cost_gamma: Discount factor for cost returns
     """
 
     policy_aliases: ClassVar[Dict[str, Type[BasePolicy]]] = {
@@ -114,9 +116,11 @@ class PPOLag(LagOnPolicyAlgorithm):
 
         penalty_learning_rate: Union[None, float, Schedule] = None,
         cost_threshold: Union[float, Schedule] = 0.0,
-        lag_multiplier_init: float = 0.0,
+        lag_multiplier_init: float = 0.001,
         clip_range_cvf: Union[None, float, Schedule] = None,
-        cvf_coef: float = 0.5,
+        cvf_coef: float = 0.1,
+        cost_gae_lambda: Optional[float] = None,
+        cost_gamma: Optional[float] = None
     ):
 
         super().__init__(
@@ -146,7 +150,9 @@ class PPOLag(LagOnPolicyAlgorithm):
             ),
             penalty_learning_rate=penalty_learning_rate,
             cost_threshold=cost_threshold,
-            lag_multiplier_init=lag_multiplier_init
+            lag_multiplier_init=lag_multiplier_init,
+            cost_gae_lambda=cost_gae_lambda,
+            cost_gamma=cost_gamma
         )
 
         # Sanity check, otherwise it will lead to noisy gradient and NaN
@@ -228,7 +234,6 @@ class PPOLag(LagOnPolicyAlgorithm):
         entropy_losses = []
         pg_losses, value_losses = [], []
         cost_value_losses = []
-        penalty_losses = []
         clip_fractions = []
 
         continue_training = True
@@ -264,21 +269,15 @@ class PPOLag(LagOnPolicyAlgorithm):
                 ratio = th.exp(log_prob - rollout_data.old_log_prob)
                 ratio_clipped = th.clamp(ratio, 1 - clip_range, 1 + clip_range)
 
-                # clipped surrogate loss
-                policy_loss_1 = advantages * ratio
-                policy_loss_2 = advantages * ratio_clipped
-                policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()
-
-                penalty_loss_1 = cost_advantages * ratio
-                penalty_loss_2 = cost_advantages * ratio_clipped
-                penalty_loss = th.min(penalty_loss_1, penalty_loss_2).mean()
-                # penalty_loss = penalty_loss_1.mean()
+                # scale advantage surrogate
                 lag_multiplier = self.lagrange.multiplier().item()
-                penalty_loss = lag_multiplier * penalty_loss
-                penalty_losses.append(penalty_loss.item())
+                adv_surrogate = advantages - lag_multiplier * cost_advantages
+                adv_surrogate = adv_surrogate / (1.0 + lag_multiplier)
 
-                # Scale policy loss to avoid large parameter changes
-                adv_surrogate = (policy_loss + penalty_loss) / (1.0 + lag_multiplier)
+                # clipped surrogate loss
+                policy_loss_1 = adv_surrogate * ratio
+                policy_loss_2 = adv_surrogate * ratio_clipped
+                policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()
 
                 # Logging
                 pg_losses.append(policy_loss.item())
@@ -320,7 +319,7 @@ class PPOLag(LagOnPolicyAlgorithm):
 
                 entropy_losses.append(entropy_loss.item())
 
-                loss = (adv_surrogate
+                loss = (policy_loss
                         + self.ent_coef * entropy_loss
                         + self.vf_coef * value_loss
                         + self.cvf_coef * cost_value_loss)
@@ -371,7 +370,6 @@ class PPOLag(LagOnPolicyAlgorithm):
         if self.clip_range_cvf is not None:
             self.logger.record("train_penalty/clip_range_cvf", clip_range_cvf)
         self.logger.record("train_penalty/cost_value_loss", np.mean(cost_value_losses))
-        self.logger.record("train_penalty/penalty_policy_loss", np.mean(penalty_losses))
 
     def learn(
         self: SelfPPOLag,
