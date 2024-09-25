@@ -7,7 +7,7 @@ from stable_baselines3.common.torch_layers import (
 )
 from stable_baselines3.common.type_aliases import Schedule
 from stable_baselines3.common.policies import ActorCriticPolicy, BasePolicy
-from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union, Iterator
+from typing import Any, Dict, List, Optional, Tuple, Type, Union
 from functools import partial
 from gymnasium import spaces
 from torch import nn

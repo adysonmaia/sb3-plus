@@ -14,6 +14,7 @@ class Lagrange:
     :param cost_threshold: cost threshold
     :param multiplier_init: multiplier initial value
     :param learning_rate: learning rate
+    :param max_grad_norm: maximum value for the gradient clipping
     :param optimizer_class: optimizer class
     :param optimizer_kwargs: optimizer parameters
     """
@@ -23,12 +24,14 @@ class Lagrange:
             cost_threshold: Union[float, Schedule] = 0.0,
             multiplier_init: float = 0.0,
             learning_rate: Union[float, Schedule] = 3e-4,
+            max_grad_norm: float = 20.0,
             optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
             optimizer_kwargs: Optional[Dict[str, Any]] = None,
     ):
         self.cost_threshold = cost_threshold
         self.cost_threshold_scheduler = get_schedule_fn(self.cost_threshold)
         self.multiplier_init = max(0.0, multiplier_init)
+        self.max_grad_norm = max_grad_norm
         self.optimizer_class = optimizer_class
         self.learning_rate = learning_rate
         self.lr_schedule = get_schedule_fn(self.learning_rate)
@@ -72,6 +75,7 @@ class Lagrange:
         # Optimization step
         self.optimizer.zero_grad()
         loss.backward()
+        th.nn.utils.clip_grad_norm_(self.multiplier_net.parameters(), self.max_grad_norm)
         self.optimizer.step()
         return loss
 

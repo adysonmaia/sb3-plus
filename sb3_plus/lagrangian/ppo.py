@@ -120,7 +120,8 @@ class PPOLag(LagOnPolicyAlgorithm):
         clip_range_cvf: Union[None, float, Schedule] = None,
         cvf_coef: float = 0.1,
         cost_gae_lambda: Optional[float] = None,
-        cost_gamma: Optional[float] = None
+        cost_gamma: Optional[float] = None,
+        lag_max_grad_norm: Optional[float] = None,
     ):
 
         super().__init__(
@@ -152,7 +153,8 @@ class PPOLag(LagOnPolicyAlgorithm):
             cost_threshold=cost_threshold,
             lag_multiplier_init=lag_multiplier_init,
             cost_gae_lambda=cost_gae_lambda,
-            cost_gamma=cost_gamma
+            cost_gamma=cost_gamma,
+            lag_max_grad_norm=lag_max_grad_norm
         )
 
         # Sanity check, otherwise it will lead to noisy gradient and NaN
@@ -251,7 +253,8 @@ class PPOLag(LagOnPolicyAlgorithm):
                 if self.use_sde:
                     self.policy.reset_noise(self.batch_size)
 
-                values, cost_values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
+                obs = rollout_data.observations
+                values, cost_values, log_prob, entropy = self.policy.evaluate_actions(obs, actions)
                 values = values.flatten()
                 cost_values = cost_values.flatten()
 
@@ -262,8 +265,9 @@ class PPOLag(LagOnPolicyAlgorithm):
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
                 cost_advantages = rollout_data.cost_advantages
+                # Center, but do NOT rescale advantages for cost gradient
                 if self.normalize_advantage and len(cost_advantages) > 1:
-                    cost_advantages = (cost_advantages - cost_advantages.mean()) / (cost_advantages.std() + 1e-8)
+                    cost_advantages = cost_advantages - cost_advantages.mean()
 
                 # ratio between old and new policy, should be one at the first iteration
                 ratio = th.exp(log_prob - rollout_data.old_log_prob)

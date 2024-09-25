@@ -7,6 +7,7 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedul
 from stable_baselines3.common.utils import obs_as_tensor, safe_mean, get_schedule_fn, update_learning_rate
 from stable_baselines3.common.vec_env import VecEnv
 from gymnasium import spaces
+from collections import deque
 from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
 import numpy as np
 import torch as th
@@ -58,7 +59,7 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
     :param lag_multiplier_init: initial value for lagrange multiplier
     :param cost_gae_lambda: GAE lambda for cost advantage estimations
     :param cost_gamma: Discount factor for cost returns
-
+    :param lag_max_grad_norm: The maximum value for the gradient clipping during lagrange multiplier update
     """
 
     lagrange: Lagrange
@@ -90,7 +91,8 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
         cost_threshold: Union[float, Schedule] = 0.0,
         lag_multiplier_init: float = 0.0,
         cost_gae_lambda: Optional[float] = None,
-        cost_gamma: Optional[float] = None
+        cost_gamma: Optional[float] = None,
+        lag_max_grad_norm: Optional[float] = None,
     ):
 
         super().__init__(
@@ -123,9 +125,10 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
         self.lag_multiplier_init = lag_multiplier_init
         self.cost_gae_lambda = cost_gae_lambda if cost_gae_lambda is not None else self.gae_lambda
         self.cost_gamma = cost_gamma if cost_gamma is not None else self.gamma
+        self.lag_max_grad_norm = lag_max_grad_norm if lag_max_grad_norm is not None else self.max_grad_norm
 
-        self._ep_costs: List[float] = []
-        self._ep_cost_returns: List[float] = []
+        self._ep_costs: deque = deque(maxlen=stats_window_size)
+        self._ep_cost_returns: deque = deque(maxlen=stats_window_size)
         self._current_costs: Optional[np.ndarray] = None
         self._current_cost_returns: Optional[np.ndarray] = None
         self._current_env_steps: Optional[np.ndarray] = None
@@ -167,6 +170,7 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
             cost_threshold=self.cost_threshold,
             multiplier_init=self.lag_multiplier_init,
             learning_rate=self.penalty_learning_rate,
+            max_grad_norm=self.lag_max_grad_norm,
             optimizer_class=self.policy.optimizer_class,
             optimizer_kwargs=self.policy.optimizer_kwargs
         )
@@ -197,6 +201,8 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
 
         n_steps = 0
         rollout_buffer.reset()
+        self._ep_costs.clear()
+        self._ep_cost_returns.clear()
         # Sample new weights for the state dependent exploration
         if self.use_sde:
             self.policy.reset_noise(env.num_envs)
@@ -262,7 +268,7 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
             if np.any(dones_mask):
                 self._ep_costs.extend(self._current_costs[dones_mask])
                 self._ep_cost_returns.extend(self._current_cost_returns[dones_mask])
-                # reset dones environments
+                # reset done environments
                 not_dones = 1 - dones
                 self._current_costs *= not_dones
                 self._current_cost_returns *= not_dones
@@ -309,9 +315,7 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
         """
         mean_ep_cost = 0.0
         if len(self._ep_cost_returns) > 0:
-            # mean_ep_cost = float(safe_mean(self._ep_costs))
-            mean_ep_cost = float(safe_mean(self._ep_cost_returns))
-
+            mean_ep_cost = float(safe_mean(self._ep_costs))
         loss = self.lagrange.update_multiplier(mean_ep_cost, self._current_progress_remaining)
 
         # Logs
@@ -350,9 +354,6 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
         self._current_env_steps = np.zeros(num_envs, dtype=np.float32)
 
         while self.num_timesteps < total_timesteps:
-            self._ep_costs = []
-            self._ep_cost_returns = []
-
             continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps)
 
             if continue_training is False:
@@ -370,7 +371,6 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
                 if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
                     self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
                     self.logger.record("rollout/ep_cost_mean", safe_mean(self._ep_costs))
-                    self.logger.record("rollout/ep_cost_r_mean", safe_mean(self._ep_cost_returns))
                     self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                 self.logger.record("time/fps", fps)
                 self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
