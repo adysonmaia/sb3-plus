@@ -4,11 +4,9 @@ from torch import nn
 import torch as th
 
 
-class LagMlpExtractor(MlpExtractor):
+class SafeMlpExtractor(MlpExtractor):
     """
-    Constructs an MLP that receives the output from a previous features extractor (i.e. a CNN) or directly
-    the observations (if no features extractor is applied) as an input and outputs a latent representation
-    for the policy and a value network.
+    MLP Extractor for Safe Reinforcement Learning
 
     The ``net_arch`` parameter allows to specify the amount and size of the hidden layers.
     It can be in either of the following forms:

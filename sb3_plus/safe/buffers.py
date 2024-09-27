@@ -1,4 +1,4 @@
-from .type_aliases import LagRolloutBufferSamples, LagDictRolloutBufferSamples
+from .type_aliases import SafeRolloutBufferSamples, SafeDictRolloutBufferSamples
 from stable_baselines3.common.vec_env import VecNormalize
 from stable_baselines3.common.buffers import BaseBuffer
 from typing import Dict, Generator, Optional, Union
@@ -7,7 +7,7 @@ import torch as th
 from gymnasium import spaces
 
 
-class LagRolloutBuffer(BaseBuffer):
+class SafeRolloutBuffer(BaseBuffer):
     """
     Rollout buffer used in on-policy algorithms like A2C/PPO.
     It corresponds to ``buffer_size`` transitions collected
@@ -179,7 +179,7 @@ class LagRolloutBuffer(BaseBuffer):
         if self.pos == self.buffer_size:
             self.full = True
 
-    def get(self, batch_size: Optional[int] = None) -> Generator[LagRolloutBufferSamples, None, None]:
+    def get(self, batch_size: Optional[int] = None) -> Generator[SafeRolloutBufferSamples, None, None]:
         assert self.full, ""
         indices = np.random.permutation(self.buffer_size * self.n_envs)
         # Prepare the data
@@ -213,7 +213,7 @@ class LagRolloutBuffer(BaseBuffer):
             self,
             batch_inds: np.ndarray,
             env: Optional[VecNormalize] = None
-    ) -> LagRolloutBufferSamples:
+    ) -> SafeRolloutBufferSamples:
         data = (
             self.observations[batch_inds],
             self.actions[batch_inds],
@@ -225,10 +225,10 @@ class LagRolloutBuffer(BaseBuffer):
             self.cost_returns[batch_inds].flatten(),
             self.cost_advantages[batch_inds].flatten(),
         )
-        return LagRolloutBufferSamples(*tuple(map(self.to_torch, data)))
+        return SafeRolloutBufferSamples(*tuple(map(self.to_torch, data)))
 
 
-class LagDictRolloutBuffer(LagRolloutBuffer):
+class SafeDictRolloutBuffer(SafeRolloutBuffer):
     """
     Dict Rollout buffer used in on-policy algorithms like A2C/PPO.
     Extends the RolloutBuffer to use dictionary observations
@@ -343,7 +343,7 @@ class LagDictRolloutBuffer(LagRolloutBuffer):
     def get(
             self,
             batch_size: Optional[int] = None
-    ) -> Generator[LagDictRolloutBufferSamples, None, None]:
+    ) -> Generator[SafeDictRolloutBufferSamples, None, None]:
         assert self.full, ""
         indices = np.random.permutation(self.buffer_size * self.n_envs)
         # Prepare the data
@@ -371,8 +371,8 @@ class LagDictRolloutBuffer(LagRolloutBuffer):
             self,
             batch_inds: np.ndarray,
             env: Optional[VecNormalize] = None
-    ) -> LagDictRolloutBufferSamples:
-        return LagDictRolloutBufferSamples(
+    ) -> SafeDictRolloutBufferSamples:
+        return SafeDictRolloutBufferSamples(
             observations={key: self.to_torch(obs[batch_inds]) for (key, obs) in self.observations.items()},
             actions=self.to_torch(self.actions[batch_inds]),
             old_values=self.to_torch(self.values[batch_inds].flatten()),

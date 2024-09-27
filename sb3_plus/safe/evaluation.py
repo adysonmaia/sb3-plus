@@ -6,11 +6,10 @@ import numpy as np
 
 from stable_baselines3.common import type_aliases
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, VecMonitor, is_vecenv_wrapped
+from .type_aliases import PENALTY_COST_INFO_KEY
 
-PENALTY_COST_INFO_KEY = "cost"
 
-
-def evaluate_lag_policy(
+def evaluate_safe_policy(
     model: "type_aliases.PolicyPredictor",
     env: Union[gym.Env, VecEnv],
     n_eval_episodes: int = 10,

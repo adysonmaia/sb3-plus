@@ -1,22 +1,25 @@
-from .policies import LagActorCriticPolicy, LagActorCriticCnnPolicy, LagMultiInputActorCriticPolicy
-from .on_policy_algorithm import LagOnPolicyAlgorithm
-from stable_baselines3.common.policies import BasePolicy
-from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
-from stable_baselines3.common.utils import explained_variance, get_schedule_fn, update_learning_rate
+import warnings
 from typing import Any, ClassVar, Dict, Optional, Type, TypeVar, Union
-from torch.nn import functional as F
-from gymnasium import spaces
+
 import numpy as np
 import torch as th
-import warnings
+from gymnasium import spaces
+from stable_baselines3.common.policies import BasePolicy
+from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
+from stable_baselines3.common.utils import explained_variance, get_schedule_fn
+from torch.nn import functional as F
+
+from sb3_plus.safe.lagrangian.common.lagrange import BaseLagrange
+from sb3_plus.safe.lagrangian.common.on_policy_algorithm import LagOnPolicyAlgorithm
+from sb3_plus.safe.lagrangian.naive.lagrange import Lagrange
+from sb3_plus.safe.policies import SafeActorCriticPolicy, SafeActorCriticCnnPolicy, SafeMultiInputActorCriticPolicy
+
+SelfBaseLagPPO = TypeVar("SelfBaseLagPPO", bound="BaseLagPPO")
 
 
-SelfPPOLag = TypeVar("SelfPPOLag", bound="PPOLag")
-
-
-class PPOLag(LagOnPolicyAlgorithm):
+class BaseLagPPO(LagOnPolicyAlgorithm):
     """
-    Lagrangian Proximal Policy Optimization algorithm (PPO-Lag) (clip version)
+    Base class for Lagrangian Proximal Policy Optimization algorithm (PPO-Lag) (clip version)
 
     Paper: https://arxiv.org/abs/1707.06347
     Code: This implementation borrows code from OpenAI Spinning Up (https://github.com/openai/spinningup/)
@@ -67,10 +70,8 @@ class PPOLag(LagOnPolicyAlgorithm):
         Setting it to auto, the code will be run on the GPU if possible.
     :param _init_setup_model: Whether or not to build the network at the creation of the instance
 
-    :param penalty_learning_rate: The learning rate for penalty, it can be a function
-        of the current progress remaining (from 1 to 0)
-    :param cost_threshold: Cost return threshold
-    :param lag_multiplier_init: Lagrange multiplier initial value
+    param lagrange_class: class implementing a lagrange-base algorithm
+    :param lagrange_kwargs: additional arguments to be passed to the lagrange on creation
     :param clip_range_cvf: Clipping parameter for the cost value function,
         it can be a function of the current progress remaining (from 1 to 0).
         This is a parameter specific to the OpenAI implementation. If None is passed (default),
@@ -82,14 +83,14 @@ class PPOLag(LagOnPolicyAlgorithm):
     """
 
     policy_aliases: ClassVar[Dict[str, Type[BasePolicy]]] = {
-        "MlpPolicy": LagActorCriticPolicy,
-        "CnnPolicy": LagActorCriticCnnPolicy,
-        "MultiInputPolicy": LagMultiInputActorCriticPolicy,
+        "MlpPolicy": SafeActorCriticPolicy,
+        "CnnPolicy": SafeActorCriticCnnPolicy,
+        "MultiInputPolicy": SafeMultiInputActorCriticPolicy,
     }
 
     def __init__(
         self,
-        policy: Union[str, Type[LagActorCriticPolicy]],
+        policy: Union[str, Type[SafeActorCriticPolicy]],
         env: Union[GymEnv, str],
         learning_rate: Union[float, Schedule] = 3e-4,
         n_steps: int = 2048,
@@ -114,14 +115,12 @@ class PPOLag(LagOnPolicyAlgorithm):
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
 
-        penalty_learning_rate: Union[None, float, Schedule] = None,
-        cost_threshold: Union[float, Schedule] = 0.0,
-        lag_multiplier_init: float = 0.001,
-        clip_range_cvf: Union[None, float, Schedule] = None,
-        cvf_coef: float = 0.1,
+        lagrange_class: Type[BaseLagrange] = Lagrange,
+        lagrange_kwargs: Optional[Dict[str, Any]] = None,
         cost_gae_lambda: Optional[float] = None,
         cost_gamma: Optional[float] = None,
-        lag_max_grad_norm: Optional[float] = None,
+        clip_range_cvf: Union[None, float, Schedule] = None,
+        cvf_coef: float = 0.1,
     ):
 
         super().__init__(
@@ -149,12 +148,10 @@ class PPOLag(LagOnPolicyAlgorithm):
                 spaces.MultiDiscrete,
                 spaces.MultiBinary,
             ),
-            penalty_learning_rate=penalty_learning_rate,
-            cost_threshold=cost_threshold,
-            lag_multiplier_init=lag_multiplier_init,
+            lagrange_class=lagrange_class,
+            lagrange_kwargs=lagrange_kwargs,
             cost_gae_lambda=cost_gae_lambda,
             cost_gamma=cost_gamma,
-            lag_max_grad_norm=lag_max_grad_norm
         )
 
         # Sanity check, otherwise it will lead to noisy gradient and NaN
@@ -212,9 +209,6 @@ class PPOLag(LagOnPolicyAlgorithm):
             self.clip_range_cvf = get_schedule_fn(self.clip_range_cvf)
         else:
             self.clip_range_cvf = self.clip_range_vf
-
-        # Initialize schedule for penalty threshold
-        self.cost_threshold = get_schedule_fn(self.cost_threshold)
 
     def train(self) -> None:
         """
@@ -376,14 +370,14 @@ class PPOLag(LagOnPolicyAlgorithm):
         self.logger.record("train_penalty/cost_value_loss", np.mean(cost_value_losses))
 
     def learn(
-        self: SelfPPOLag,
+        self: SelfBaseLagPPO,
         total_timesteps: int,
         callback: MaybeCallback = None,
         log_interval: int = 1,
         tb_log_name: str = "PPOLag",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
-    ) -> SelfPPOLag:
+    ) -> SelfBaseLagPPO:
         super().learn(
             total_timesteps=total_timesteps,
             callback=callback,

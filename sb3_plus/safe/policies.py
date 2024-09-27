@@ -1,4 +1,4 @@
-from .torch_layers import LagMlpExtractor
+from .torch_layers import SafeMlpExtractor
 from stable_baselines3.common.torch_layers import (
     BaseFeaturesExtractor,
     CombinedExtractor,
@@ -15,7 +15,7 @@ import numpy as np
 import torch as th
 
 
-class LagActorCriticPolicy(ActorCriticPolicy):
+class SafeActorCriticPolicy(ActorCriticPolicy):
     """
     Policy class for actor-critic algorithms (has both policy and value prediction).
     Used by A2C, PPO and the likes.
@@ -45,7 +45,6 @@ class LagActorCriticPolicy(ActorCriticPolicy):
         ``th.optim.Adam`` by default
     :param optimizer_kwargs: Additional keyword arguments,
         excluding the learning rate, to pass to the optimizer
-    :param lag_multiplier_lr_schedule: Learning rate schedule (could be constant) for lagrange multiplier optimization
     """
 
     cvf_features_extractor: BaseFeaturesExtractor
@@ -124,7 +123,7 @@ class LagActorCriticPolicy(ActorCriticPolicy):
         # Note: If net_arch is None and some features extractor is used,
         #       net_arch here is an empty list and mlp_extractor does not
         #       really contain any layers (acts like an identity module).
-        self.mlp_extractor = LagMlpExtractor(
+        self.mlp_extractor = SafeMlpExtractor(
             self.features_dim,
             net_arch=self.net_arch,
             activation_fn=self.activation_fn,
@@ -211,7 +210,7 @@ class LagActorCriticPolicy(ActorCriticPolicy):
         return self.cost_value_net(latent_cvf)
 
 
-class LagActorCriticCnnPolicy(LagActorCriticPolicy):
+class SafeActorCriticCnnPolicy(SafeActorCriticPolicy):
     """
     CNN policy class for actor-critic algorithms (has both policy and value prediction).
     Used by A2C, PPO and the likes.
@@ -284,7 +283,7 @@ class LagActorCriticCnnPolicy(LagActorCriticPolicy):
         )
 
 
-class LagMultiInputActorCriticPolicy(LagActorCriticPolicy):
+class SafeMultiInputActorCriticPolicy(SafeActorCriticPolicy):
     """
     MultiInputActorClass policy class for actor-critic algorithms (has both policy and value prediction).
     Used by A2C, PPO and the likes.

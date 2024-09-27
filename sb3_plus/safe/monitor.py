@@ -5,11 +5,10 @@ from typing import Any, Dict, List, Optional, SupportsFloat, Tuple, Union
 
 import gymnasium as gym
 from gymnasium.core import ActType, ObsType
+from .type_aliases import PENALTY_COST_INFO_KEY
 
-PENALTY_COST_INFO_KEY = "cost"
 
-
-class LagMonitor(Monitor):
+class SafeMonitor(Monitor):
     """
     A monitor wrapper for Gym environments, it is used to know the episode reward, length, cost, time and other data.
 

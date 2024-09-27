@@ -1,13 +1,15 @@
+from typing import Dict, Type, Union, Optional, Any
 
+import numpy as np
+import torch as th
 from stable_baselines3.common.type_aliases import Schedule
 from stable_baselines3.common.utils import get_schedule_fn, update_learning_rate
-from typing import Dict, Type, Union, Optional, Any
 from torch import nn
-import torch as th
-import numpy as np
+
+from sb3_plus.safe.lagrangian.common.lagrange import BaseLagrange
 
 
-class Lagrange:
+class Lagrange(BaseLagrange):
     """
     This class implements methods to obtain and update the lagrange multiplier
 
@@ -28,9 +30,7 @@ class Lagrange:
             optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
             optimizer_kwargs: Optional[Dict[str, Any]] = None,
     ):
-        self.cost_threshold = cost_threshold
-        self.cost_threshold_scheduler = get_schedule_fn(self.cost_threshold)
-        self.multiplier_init = max(0.0, multiplier_init)
+        super().__init__(cost_threshold, multiplier_init)
         self.max_grad_norm = max_grad_norm
         self.optimizer_class = optimizer_class
         self.learning_rate = learning_rate
@@ -56,7 +56,7 @@ class Lagrange:
         """
         return self.multiplier_net()
 
-    def update_multiplier(self, mean_ep_cost: float, current_progress_remaining: float) -> th.Tensor:
+    def update_multiplier(self, mean_ep_cost: float, current_progress_remaining: float, **kwargs) -> th.Tensor:
         """
         Update the lagrange multiplier (lambda) based on episode cost
         :param mean_ep_cost: mean episode cost

@@ -1,20 +1,22 @@
-from .buffers import LagRolloutBuffer, LagDictRolloutBuffer
-from .policies import LagActorCriticPolicy
-from .lagrange import Lagrange
+import sys
+import time
+from collections import deque
+from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
+
+import numpy as np
+import torch as th
+from gymnasium import spaces
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
-from stable_baselines3.common.utils import obs_as_tensor, safe_mean, get_schedule_fn, update_learning_rate
+from stable_baselines3.common.utils import obs_as_tensor, safe_mean
 from stable_baselines3.common.vec_env import VecEnv
-from gymnasium import spaces
-from collections import deque
-from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
-import numpy as np
-import torch as th
-import sys
-import time
 
-PENALTY_COST_INFO_KEY = "cost"
+from sb3_plus.safe.buffers import SafeRolloutBuffer, SafeDictRolloutBuffer
+from sb3_plus.safe.lagrangian.common.lagrange import BaseLagrange
+from sb3_plus.safe.lagrangian.naive.lagrange import Lagrange
+from sb3_plus.safe.policies import SafeActorCriticPolicy
+from sb3_plus.safe.type_aliases import PENALTY_COST_INFO_KEY
 
 SelfLagOnPolicyAlgorithm = TypeVar("SelfLagOnPolicyAlgorithm", bound="LagOnPolicyAlgorithm")
 
@@ -53,20 +55,17 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
     :param _init_setup_model: Whether or not to build the network at the creation of the instance
     :param supported_action_spaces: The action spaces supported by the algorithm.
 
-    :param penalty_learning_rate: The learning rate for lagrange multiplier, it can be a function
-        of the current progress remaining (from 1 to 0)
-    :param cost_threshold: cost threshold
-    :param lag_multiplier_init: initial value for lagrange multiplier
+    :param lagrange_class: class implementing a lagrange-base algorithm
+    :param lagrange_kwargs: additional arguments to be passed to the lagrange on creation
     :param cost_gae_lambda: GAE lambda for cost advantage estimations
     :param cost_gamma: Discount factor for cost returns
-    :param lag_max_grad_norm: The maximum value for the gradient clipping during lagrange multiplier update
     """
 
-    lagrange: Lagrange
+    lagrange: BaseLagrange
 
     def __init__(
         self,
-        policy: Union[str, Type[LagActorCriticPolicy]],
+        policy: Union[str, Type[SafeActorCriticPolicy]],
         env: Union[GymEnv, str],
         learning_rate: Union[float, Schedule],
         n_steps: int,
@@ -87,12 +86,10 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
         _init_setup_model: bool = True,
         supported_action_spaces: Optional[Tuple[Type[spaces.Space], ...]] = None,
 
-        penalty_learning_rate: Union[None, float, Schedule] = None,
-        cost_threshold: Union[float, Schedule] = 0.0,
-        lag_multiplier_init: float = 0.0,
+        lagrange_class: Type[BaseLagrange] = Lagrange,
+        lagrange_kwargs: Optional[Dict[str, Any]] = None,
         cost_gae_lambda: Optional[float] = None,
         cost_gamma: Optional[float] = None,
-        lag_max_grad_norm: Optional[float] = None,
     ):
 
         super().__init__(
@@ -120,12 +117,10 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
         self.max_grad_norm = max_grad_norm
         self.rollout_buffer = None
 
-        self.penalty_learning_rate = penalty_learning_rate
-        self.cost_threshold = cost_threshold
-        self.lag_multiplier_init = lag_multiplier_init
+        self.lagrange_class = lagrange_class
+        self.lagrange_kwargs = lagrange_kwargs
         self.cost_gae_lambda = cost_gae_lambda if cost_gae_lambda is not None else self.gae_lambda
         self.cost_gamma = cost_gamma if cost_gamma is not None else self.gamma
-        self.lag_max_grad_norm = lag_max_grad_norm if lag_max_grad_norm is not None else self.max_grad_norm
 
         self._ep_costs: deque = deque(maxlen=stats_window_size)
         self._ep_cost_returns: deque = deque(maxlen=stats_window_size)
@@ -140,7 +135,7 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
         self._setup_lr_schedule()
         self.set_random_seed(self.seed)
 
-        buffer_cls = LagDictRolloutBuffer if isinstance(self.observation_space, spaces.Dict) else LagRolloutBuffer
+        buffer_cls = SafeDictRolloutBuffer if isinstance(self.observation_space, spaces.Dict) else SafeRolloutBuffer
 
         self.rollout_buffer = buffer_cls(
             self.n_steps,
@@ -164,22 +159,15 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
         # pytype:enable=not-instantiable
         self.policy = self.policy.to(self.device)
 
-        if self.penalty_learning_rate is None:
-            self.penalty_learning_rate = self.learning_rate
-        self.lagrange = Lagrange(
-            cost_threshold=self.cost_threshold,
-            multiplier_init=self.lag_multiplier_init,
-            learning_rate=self.penalty_learning_rate,
-            max_grad_norm=self.lag_max_grad_norm,
-            optimizer_class=self.policy.optimizer_class,
-            optimizer_kwargs=self.policy.optimizer_kwargs
-        )
+        if self.lagrange_kwargs is None:
+            self.lagrange_kwargs = {}
+        self.lagrange = self.lagrange_class(**self.lagrange_kwargs)
 
     def collect_rollouts(
         self,
         env: VecEnv,
         callback: BaseCallback,
-        rollout_buffer: LagRolloutBuffer,
+        rollout_buffer: SafeRolloutBuffer,
         n_rollout_steps: int,
     ) -> bool:
         """
