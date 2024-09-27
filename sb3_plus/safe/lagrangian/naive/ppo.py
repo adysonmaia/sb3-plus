@@ -10,14 +10,9 @@ from sb3_plus.safe.policies import SafeActorCriticPolicy
 
 class PPOLag(BaseLagPPO):
     """
-        Base class for Lagrangian Proximal Policy Optimization algorithm (PPO-Lag) (clip version)
+        Lagrangian Proximal Policy Optimization algorithm (PPO-Lag) (clip version)
 
-        Paper: https://arxiv.org/abs/1707.06347
-        Code: This implementation borrows code from OpenAI Spinning Up (https://github.com/openai/spinningup/)
-        https://github.com/ikostrikov/pytorch-a2c-ppo-acktr-gail and
-        Stable Baselines (PPO2 from https://github.com/hill-a/stable-baselines)
-
-        Introduction to PPO: https://spinningup.openai.com/en/latest/algorithms/ppo.html
+        Paper: https://cdn.openai.com/safexp-short.pdf
 
         :param policy: The policy model to use (MlpPolicy, CnnPolicy, ...)
         :param env: The environment to learn from (if registered in Gym, can be str)
@@ -73,6 +68,7 @@ class PPOLag(BaseLagPPO):
         :param cvf_coef: Cost value function coefficient for the loss calculation
         :param cost_gae_lambda: GAE lambda for cost advantage estimations
         :param cost_gamma: Discount factor for cost returns
+        :param lag_max_grad_norm: The maximum value for the gradient clipping of lagrangian multiplier update
         """
 
     def __init__(
