@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional, Type, Union
+from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import torch as th
 from stable_baselines3.common.type_aliases import GymEnv, Schedule
@@ -154,3 +154,8 @@ class PPOLag(BaseLagPPO):
             clip_range_cvf=clip_range_cvf,
             cvf_coef=cvf_coef,
         )
+
+    def _get_torch_save_params(self) -> Tuple[List[str], List[str]]:
+        state_dicts = ["policy", "policy.optimizer", "lagrange.optimizer"]
+
+        return state_dicts, []

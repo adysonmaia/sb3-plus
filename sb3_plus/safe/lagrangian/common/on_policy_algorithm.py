@@ -373,6 +373,6 @@ class LagOnPolicyAlgorithm(BaseAlgorithm):
         return self
 
     def _get_torch_save_params(self) -> Tuple[List[str], List[str]]:
-        state_dicts = ["policy", "policy.optimizer", "lagrange.optimizer"]
+        state_dicts = ["policy", "policy.optimizer"]
 
         return state_dicts, []
