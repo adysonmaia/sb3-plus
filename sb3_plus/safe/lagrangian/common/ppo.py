@@ -1,18 +1,23 @@
 import warnings
-from typing import Any, ClassVar, Dict, Optional, Type, TypeVar, Union
+from typing import Any, ClassVar, TypeVar
 
 import numpy as np
 import torch as th
 from gymnasium import spaces
 from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
-from stable_baselines3.common.utils import explained_variance, get_schedule_fn
+from stable_baselines3.common.utils import FloatSchedule, explained_variance
 from torch.nn import functional as F
 
+from sb3_plus.safe.buffers import SafeRolloutBuffer
 from sb3_plus.safe.lagrangian.common.lagrange import BaseLagrange
 from sb3_plus.safe.lagrangian.common.on_policy_algorithm import LagOnPolicyAlgorithm
 from sb3_plus.safe.lagrangian.naive.lagrange import Lagrange
-from sb3_plus.safe.policies import SafeActorCriticPolicy, SafeActorCriticCnnPolicy, SafeMultiInputActorCriticPolicy
+from sb3_plus.safe.policies import (
+    SafeActorCriticCnnPolicy,
+    SafeActorCriticPolicy,
+    SafeMultiInputActorCriticPolicy,
+)
 
 SelfBaseLagPPO = TypeVar("SelfBaseLagPPO", bound="BaseLagPPO")
 
@@ -55,6 +60,8 @@ class BaseLagPPO(LagOnPolicyAlgorithm):
         instead of action noise exploration (default: False)
     :param sde_sample_freq: Sample a new noise matrix every n steps when using gSDE
         Default: -1 (only sample at the beginning of the rollout)
+    :param rollout_buffer_class: Rollout buffer class to use. If ``None``, it will be automatically selected.
+    :param rollout_buffer_kwargs: Keyword arguments to pass to the rollout buffer on creation
     :param target_kl: Limit the KL divergence between updates,
         because the clipping is not enough to prevent large update
         see issue #213 (cf https://github.com/hill-a/stable-baselines/issues/213)
@@ -82,7 +89,7 @@ class BaseLagPPO(LagOnPolicyAlgorithm):
     :param cost_gamma: Discount factor for cost returns
     """
 
-    policy_aliases: ClassVar[Dict[str, Type[BasePolicy]]] = {
+    policy_aliases: ClassVar[dict[str, type[BasePolicy]]] = {
         "MlpPolicy": SafeActorCriticPolicy,
         "CnnPolicy": SafeActorCriticCnnPolicy,
         "MultiInputPolicy": SafeMultiInputActorCriticPolicy,
@@ -90,36 +97,37 @@ class BaseLagPPO(LagOnPolicyAlgorithm):
 
     def __init__(
         self,
-        policy: Union[str, Type[SafeActorCriticPolicy]],
-        env: Union[GymEnv, str],
-        learning_rate: Union[float, Schedule] = 3e-4,
+        policy: str | type[SafeActorCriticPolicy],
+        env: GymEnv | str,
+        learning_rate: float | Schedule = 3e-4,
         n_steps: int = 2048,
         batch_size: int = 64,
         n_epochs: int = 10,
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
-        clip_range: Union[float, Schedule] = 0.2,
-        clip_range_vf: Union[None, float, Schedule] = None,
+        clip_range: float | Schedule = 0.2,
+        clip_range_vf: None | float | Schedule = None,
         normalize_advantage: bool = True,
         ent_coef: float = 0.0,
         vf_coef: float = 0.5,
         max_grad_norm: float = 0.5,
         use_sde: bool = False,
         sde_sample_freq: int = -1,
-        target_kl: Optional[float] = None,
+        rollout_buffer_class: type[SafeRolloutBuffer] | None = None,
+        rollout_buffer_kwargs: dict[str, Any] | None = None,
+        target_kl: float | None = None,
         stats_window_size: int = 100,
-        tensorboard_log: Optional[str] = None,
-        policy_kwargs: Optional[Dict[str, Any]] = None,
+        tensorboard_log: str | None = None,
+        policy_kwargs: dict[str, Any] | None = None,
         verbose: int = 0,
-        seed: Optional[int] = None,
-        device: Union[th.device, str] = "auto",
+        seed: int | None = None,
+        device: th.device | str = "auto",
         _init_setup_model: bool = True,
-
-        lagrange_class: Type[BaseLagrange] = Lagrange,
-        lagrange_kwargs: Optional[Dict[str, Any]] = None,
-        cost_gae_lambda: Optional[float] = None,
-        cost_gamma: Optional[float] = None,
-        clip_range_cvf: Union[None, float, Schedule] = None,
+        lagrange_class: type[BaseLagrange] = Lagrange,
+        lagrange_kwargs: dict[str, Any] | None = None,
+        cost_gae_lambda: float | None = None,
+        cost_gamma: float | None = None,
+        clip_range_cvf: None | float | Schedule = None,
         cvf_coef: float = 0.1,
     ):
 
@@ -135,6 +143,8 @@ class BaseLagPPO(LagOnPolicyAlgorithm):
             max_grad_norm=max_grad_norm,
             use_sde=use_sde,
             sde_sample_freq=sde_sample_freq,
+            rollout_buffer_class=rollout_buffer_class,
+            rollout_buffer_kwargs=rollout_buffer_kwargs,
             stats_window_size=stats_window_size,
             tensorboard_log=tensorboard_log,
             policy_kwargs=policy_kwargs,
@@ -195,18 +205,24 @@ class BaseLagPPO(LagOnPolicyAlgorithm):
         super()._setup_model()
 
         # Initialize schedules for policy/value clipping
-        self.clip_range = get_schedule_fn(self.clip_range)
+        self.clip_range = FloatSchedule(self.clip_range)
         if self.clip_range_vf is not None:
             if isinstance(self.clip_range_vf, (float, int)):
-                assert self.clip_range_vf > 0, "`clip_range_vf` must be positive, " "pass `None` to deactivate vf clipping"
+                assert self.clip_range_vf > 0, (
+                    "`clip_range_vf` must be positive, "
+                    "pass `None` to deactivate vf clipping"
+                )
 
-            self.clip_range_vf = get_schedule_fn(self.clip_range_vf)
+            self.clip_range_vf = FloatSchedule(self.clip_range_vf)
 
         if self.clip_range_cvf is not None:
             if isinstance(self.clip_range_cvf, (float, int)):
-                assert self.clip_range_cvf > 0, "`clip_range_cvf` must be positive, " "pass `None` to deactivate cvf clipping"
+                assert self.clip_range_cvf > 0, (
+                    "`clip_range_cvf` must be positive, "
+                    "pass `None` to deactivate cvf clipping"
+                )
 
-            self.clip_range_cvf = get_schedule_fn(self.clip_range_cvf)
+            self.clip_range_cvf = FloatSchedule(self.clip_range_cvf)
         else:
             self.clip_range_cvf = self.clip_range_vf
 
@@ -219,10 +235,10 @@ class BaseLagPPO(LagOnPolicyAlgorithm):
         # Update optimizer learning rate
         self._update_learning_rate(self.policy.optimizer)
         # Compute current clip range
-        clip_range = self.clip_range(self._current_progress_remaining)
+        clip_range = self.clip_range(self._current_progress_remaining)  # type: ignore[operator]
         # Optional: clip range for the value function
         if self.clip_range_vf is not None:
-            clip_range_vf = self.clip_range_vf(self._current_progress_remaining)
+            clip_range_vf = self.clip_range_vf(self._current_progress_remaining)  # type: ignore[operator]
         # Optional: clip range for the cost value function
         if self.clip_range_cvf is not None:
             clip_range_cvf = self.clip_range_cvf(self._current_progress_remaining)
@@ -243,12 +259,9 @@ class BaseLagPPO(LagOnPolicyAlgorithm):
                     # Convert discrete action from float to long
                     actions = rollout_data.actions.long().flatten()
 
-                # Re-sample the noise matrix because the log_std has changed
-                if self.use_sde:
-                    self.policy.reset_noise(self.batch_size)
-
-                obs = rollout_data.observations
-                values, cost_values, log_prob, entropy = self.policy.evaluate_actions(obs, actions)
+                values, cost_values, log_prob, entropy = self.policy.evaluate_actions(
+                    rollout_data.observations, actions
+                )
                 values = values.flatten()
                 cost_values = cost_values.flatten()
 
@@ -256,7 +269,9 @@ class BaseLagPPO(LagOnPolicyAlgorithm):
                 advantages = rollout_data.advantages
                 # Normalization does not make sense if mini batchsize == 1, see GH issue #325
                 if self.normalize_advantage and len(advantages) > 1:
-                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                    advantages = (advantages - advantages.mean()) / (
+                        advantages.std() + 1e-8
+                    )
 
                 cost_advantages = rollout_data.cost_advantages
                 # Center, but do NOT rescale advantages for cost gradient
@@ -302,10 +317,14 @@ class BaseLagPPO(LagOnPolicyAlgorithm):
                     # Clip the difference between old and new value
                     # NOTE: this depends on the reward scaling
                     cost_values_pred = rollout_data.old_cost_values + th.clamp(
-                        cost_values - rollout_data.old_cost_values, -clip_range_cvf, clip_range_cvf
+                        cost_values - rollout_data.old_cost_values,
+                        -clip_range_cvf,
+                        clip_range_cvf,
                     )
                 # Cost value loss using the TD(gae_lambda) target
-                cost_value_loss = F.mse_loss(rollout_data.cost_returns, cost_values_pred)
+                cost_value_loss = F.mse_loss(
+                    rollout_data.cost_returns, cost_values_pred
+                )
                 cost_value_losses.append(cost_value_loss.item())
 
                 # Entropy loss favor exploration
@@ -317,10 +336,12 @@ class BaseLagPPO(LagOnPolicyAlgorithm):
 
                 entropy_losses.append(entropy_loss.item())
 
-                loss = (policy_loss
-                        + self.ent_coef * entropy_loss
-                        + self.vf_coef * value_loss
-                        + self.cvf_coef * cost_value_loss)
+                loss = (
+                    policy_loss
+                    + self.ent_coef * entropy_loss
+                    + self.vf_coef * value_loss
+                    + self.cvf_coef * cost_value_loss
+                )
 
                 # Calculate approximate form of reverse KL Divergence for early stopping
                 # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
@@ -328,27 +349,35 @@ class BaseLagPPO(LagOnPolicyAlgorithm):
                 # and Schulman blog: http://joschu.net/blog/kl-approx.html
                 with th.no_grad():
                     log_ratio = log_prob - rollout_data.old_log_prob
-                    approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
+                    approx_kl_div = (
+                        th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
+                    )
                     approx_kl_divs.append(approx_kl_div)
 
                 if self.target_kl is not None and approx_kl_div > 1.5 * self.target_kl:
                     continue_training = False
                     if self.verbose >= 1:
-                        print(f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div:.2f}")
+                        print(
+                            f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div:.2f}"
+                        )
                     break
 
                 # Optimization step
                 self.policy.optimizer.zero_grad()
                 loss.backward()
                 # Clip grad norm
-                th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                th.nn.utils.clip_grad_norm_(
+                    self.policy.parameters(), self.max_grad_norm
+                )
                 self.policy.optimizer.step()
 
             self._n_updates += 1
             if not continue_training:
                 break
 
-        explained_var = explained_variance(self.rollout_buffer.values.flatten(), self.rollout_buffer.returns.flatten())
+        explained_var = explained_variance(
+            self.rollout_buffer.values.flatten(), self.rollout_buffer.returns.flatten()
+        )
 
         # Logs
         self.logger.record("train/entropy_loss", np.mean(entropy_losses))

@@ -1,7 +1,6 @@
-from stable_baselines3.common.torch_layers import MlpExtractor
-from typing import Dict, List, Tuple, Type, Union
-from torch import nn
 import torch as th
+from stable_baselines3.common.torch_layers import MlpExtractor
+from torch import nn
 
 
 class SafeMlpExtractor(MlpExtractor):
@@ -29,14 +28,14 @@ class SafeMlpExtractor(MlpExtractor):
     """
 
     def __init__(
-            self,
-            feature_dim: int,
-            net_arch: Union[List[int], Dict[str, List[int]]],
-            activation_fn: Type[nn.Module],
-            device: Union[th.device, str] = "auto",
+        self,
+        feature_dim: int,
+        net_arch: list[int] | dict[str, list[int]],
+        activation_fn: type[nn.Module],
+        device: th.device | str = "auto",
     ) -> None:
         super().__init__(feature_dim, net_arch, activation_fn, device)
-        cost_value_net: List[nn.Module] = []
+        cost_value_net: list[nn.Module] = []
         last_layer_dim_cvf = feature_dim
 
         # save dimensions of layers in cost net
@@ -57,12 +56,16 @@ class SafeMlpExtractor(MlpExtractor):
         # If the list of layers is empty, the network will just act as an Identity module
         self.cost_value_net = nn.Sequential(*cost_value_net).to(device)
 
-    def forward(self, features: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+    def forward(self, features: th.Tensor) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
         """
         :return: latent_policy, latent_value, latent_cost_value of the specified network.
             If all layers are shared, then ``latent_policy == latent_value == latent_cost_value``
         """
-        return self.policy_net(features), self.value_net(features), self.cost_value_net(features)
+        return (
+            self.policy_net(features),
+            self.value_net(features),
+            self.cost_value_net(features),
+        )
 
     def forward_cost(self, features: th.Tensor) -> th.Tensor:
         return self.cost_value_net(features)

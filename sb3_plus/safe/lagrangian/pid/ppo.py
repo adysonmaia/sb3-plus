@@ -1,8 +1,9 @@
-from typing import Any, Dict, Optional, Type, Union, TypeVar
+from typing import Any, TypeVar
 
 import torch as th
-from stable_baselines3.common.type_aliases import GymEnv, Schedule, MaybeCallback
+from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 
+from sb3_plus.safe.buffers import SafeRolloutBuffer
 from sb3_plus.safe.lagrangian.common.ppo import BaseLagPPO
 from sb3_plus.safe.lagrangian.pid.lagrange import PIDLagrange
 from sb3_plus.safe.policies import SafeActorCriticPolicy
@@ -77,44 +78,45 @@ class CPPOPID(BaseLagPPO):
     """
 
     def __init__(
-            self,
-            policy: Union[str, Type[SafeActorCriticPolicy]],
-            env: Union[GymEnv, str],
-            learning_rate: Union[float, Schedule] = 3e-4,
-            n_steps: int = 2048,
-            batch_size: int = 64,
-            n_epochs: int = 10,
-            gamma: float = 0.99,
-            gae_lambda: float = 0.95,
-            clip_range: Union[float, Schedule] = 0.2,
-            clip_range_vf: Union[None, float, Schedule] = None,
-            normalize_advantage: bool = True,
-            ent_coef: float = 0.0,
-            vf_coef: float = 0.5,
-            max_grad_norm: float = 0.5,
-            use_sde: bool = False,
-            sde_sample_freq: int = -1,
-            target_kl: Optional[float] = None,
-            stats_window_size: int = 100,
-            tensorboard_log: Optional[str] = None,
-            policy_kwargs: Optional[Dict[str, Any]] = None,
-            verbose: int = 0,
-            seed: Optional[int] = None,
-            device: Union[th.device, str] = "auto",
-            _init_setup_model: bool = True,
-
-            cost_threshold: Union[float, Schedule] = 0.0,
-            lag_multiplier_init: float = 0.001,
-            clip_range_cvf: Union[None, float, Schedule] = None,
-            cvf_coef: float = 0.1,
-            cost_gae_lambda: Optional[float] = None,
-            cost_gamma: Optional[float] = None,
-            pid_kp: float = 0.1,
-            pid_ki: float = 0.01,
-            pid_kd: float = 0.01,
-            pid_d_delay: int = 10,
-            pid_delta_p_ema_alpha: float = 0.95,
-            pid_delta_d_ema_alpha: float = 0.95,
+        self,
+        policy: str | type[SafeActorCriticPolicy],
+        env: GymEnv | str,
+        learning_rate: float | Schedule = 3e-4,
+        n_steps: int = 2048,
+        batch_size: int = 64,
+        n_epochs: int = 10,
+        gamma: float = 0.99,
+        gae_lambda: float = 0.95,
+        clip_range: float | Schedule = 0.2,
+        clip_range_vf: None | float | Schedule = None,
+        normalize_advantage: bool = True,
+        ent_coef: float = 0.0,
+        vf_coef: float = 0.5,
+        max_grad_norm: float = 0.5,
+        use_sde: bool = False,
+        sde_sample_freq: int = -1,
+        rollout_buffer_class: type[SafeRolloutBuffer] | None = None,
+        rollout_buffer_kwargs: dict[str, Any] | None = None,
+        target_kl: float | None = None,
+        stats_window_size: int = 100,
+        tensorboard_log: str | None = None,
+        policy_kwargs: dict[str, Any] | None = None,
+        verbose: int = 0,
+        seed: int | None = None,
+        device: th.device | str = "auto",
+        _init_setup_model: bool = True,
+        cost_threshold: float | Schedule = 0.0,
+        lag_multiplier_init: float = 0.001,
+        clip_range_cvf: None | float | Schedule = None,
+        cvf_coef: float = 0.1,
+        cost_gae_lambda: float | None = None,
+        cost_gamma: float | None = None,
+        pid_kp: float = 0.1,
+        pid_ki: float = 0.01,
+        pid_kd: float = 0.01,
+        pid_d_delay: int = 10,
+        pid_delta_p_ema_alpha: float = 0.95,
+        pid_delta_d_ema_alpha: float = 0.95,
     ):
         lagrange_kwargs = dict(
             cost_threshold=cost_threshold,
@@ -124,7 +126,7 @@ class CPPOPID(BaseLagPPO):
             pid_kd=pid_kd,
             pid_d_delay=pid_d_delay,
             pid_delta_p_ema_alpha=pid_delta_p_ema_alpha,
-            pid_delta_d_ema_alpha=pid_delta_d_ema_alpha
+            pid_delta_d_ema_alpha=pid_delta_d_ema_alpha,
         )
 
         super().__init__(

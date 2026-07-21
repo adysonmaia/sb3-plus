@@ -1,10 +1,10 @@
-from stable_baselines3.common.monitor import Monitor
-
 import time
-from typing import Any, Dict, List, Optional, SupportsFloat, Tuple, Union
+from typing import Any, SupportsFloat
 
 import gymnasium as gym
 from gymnasium.core import ActType, ObsType
+from stable_baselines3.common.monitor import Monitor
+
 from .type_aliases import PENALTY_COST_INFO_KEY
 
 
@@ -15,13 +15,13 @@ class SafeMonitor(Monitor):
     """
 
     def __init__(
-            self,
-            env: gym.Env,
-            filename: Optional[str] = None,
-            allow_early_resets: bool = True,
-            reset_keywords: Tuple[str, ...] = (),
-            info_keywords: Tuple[str, ...] = (),
-            override_existing: bool = True,
+        self,
+        env: gym.Env,
+        filename: str | None = None,
+        allow_early_resets: bool = True,
+        reset_keywords: tuple[str, ...] = (),
+        info_keywords: tuple[str, ...] = (),
+        override_existing: bool = True,
     ):
         info_keywords = tuple(["c"]) + info_keywords
         super().__init__(
@@ -30,17 +30,19 @@ class SafeMonitor(Monitor):
             allow_early_resets=allow_early_resets,
             reset_keywords=reset_keywords,
             info_keywords=info_keywords,
-            override_existing=override_existing
+            override_existing=override_existing,
         )
-        self.costs: List[float] = []
-        self.episode_costs: List[float] = []
+        self.costs: list[float] = []
+        self.episode_costs: list[float] = []
 
-    def reset(self, **kwargs) -> Tuple[ObsType, Dict[str, Any]]:
+    def reset(self, **kwargs) -> tuple[ObsType, dict[str, Any]]:
         result = super().reset(**kwargs)
         self.costs = []
         return result
 
-    def step(self, action: ActType) -> Tuple[ObsType, SupportsFloat, bool, bool, Dict[str, Any]]:
+    def step(
+        self, action: ActType
+    ) -> tuple[ObsType, SupportsFloat, bool, bool, dict[str, Any]]:
         """
         Step the environment with the given action
 
@@ -62,7 +64,7 @@ class SafeMonitor(Monitor):
                 "r": round(ep_rew, 6),
                 "l": ep_len,
                 "t": round(time.time() - self.t_start, 6),
-                "c": round(ep_cost, 6)
+                "c": round(ep_cost, 6),
             }
             for key in self.info_keywords:
                 ep_info[key] = info[key]
@@ -76,7 +78,7 @@ class SafeMonitor(Monitor):
         self.total_steps += 1
         return observation, reward, terminated, truncated, info
 
-    def get_episode_cost(self) -> List[float]:
+    def get_episode_cost(self) -> list[float]:
         """
         Returns the cost of all the episodes
 

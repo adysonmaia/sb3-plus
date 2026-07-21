@@ -1,7 +1,8 @@
-from typing import NamedTuple, Dict, Union
+from typing import NamedTuple
+
 import torch as th
 
-TensorDict = Dict[Union[str, int], th.Tensor]
+TensorDict = dict[str | int, th.Tensor]
 
 PENALTY_COST_INFO_KEY = "cost"
 

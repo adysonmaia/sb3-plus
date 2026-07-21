@@ -1,8 +1,8 @@
-from gymnasium import spaces
 from collections import OrderedDict
 from functools import singledispatch
-from typing import Union
+
 import numpy as np
+from gymnasium import spaces
 
 
 @singledispatch
@@ -49,7 +49,7 @@ def _action_flatdim_tuple(space: spaces.Tuple) -> int:
     return int(sum([action_flatdim(s) for s in space.spaces]))
 
 
-UnflattenSpacePoint = Union[np.ndarray, int, tuple, dict]
+UnflattenSpacePoint = np.ndarray | int | tuple | dict
 
 
 @singledispatch
@@ -88,7 +88,9 @@ def _action_flatten_tuple(space: spaces.Tuple, x: UnflattenSpacePoint) -> np.nda
 
 
 @singledispatch
-def action_unflatten(space: spaces.Space, x: np.ndarray) -> Union[np.ndarray, int, tuple, dict]:
+def action_unflatten(
+    space: spaces.Space, x: np.ndarray
+) -> np.ndarray | int | tuple | dict:
     """
     Unflatten a data point from a space.
 
@@ -157,7 +159,9 @@ def _action_flatten_space_multibinary(space: spaces.MultiBinary) -> spaces.Multi
 
 
 @action_flatten_space.register(spaces.MultiDiscrete)
-def _action_flatten_space_multidiscrete(space: spaces.MultiDiscrete) -> spaces.MultiDiscrete:
+def _action_flatten_space_multidiscrete(
+    space: spaces.MultiDiscrete,
+) -> spaces.MultiDiscrete:
     return spaces.MultiDiscrete(action_flatdim(space), dtype=space.dtype)
 
 

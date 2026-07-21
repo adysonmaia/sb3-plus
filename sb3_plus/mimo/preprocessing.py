@@ -1,7 +1,9 @@
-from sb3_plus.common.spaces import action_flatdim
-from gymnasium import spaces
 from typing import Any, Sequence
+
 import numpy as np
+from gymnasium import spaces
+
+from sb3_plus.common.spaces import action_flatdim
 
 
 def get_action_dtype(action_space: spaces.Space) -> Any:
@@ -73,17 +75,25 @@ def scale_actions(actions: np.ndarray, action_space: spaces.Space) -> np.ndarray
         low, high = action_space.low, action_space.high
         return 2.0 * ((actions - low) / (high - low)) - 1.0
     elif isinstance(action_space, (spaces.Dict, spaces.Tuple)):
-        list_spaces = action_space.spaces.values() if isinstance(action_space, spaces.Dict) else action_space.spaces
+        list_spaces = (
+            action_space.spaces.values()
+            if isinstance(action_space, spaces.Dict)
+            else action_space.spaces
+        )
         dims = [get_action_dim(s) for s in list_spaces]
         split_actions = np.split(actions, np.cumsum(dims)[:-1], axis=-1)
-        list_unscaled = [scale_actions(a, s) for a, s in zip(split_actions, list_spaces)]
+        list_unscaled = [
+            scale_actions(a, s) for a, s in zip(split_actions, list_spaces)
+        ]
         return np.concatenate(list_unscaled, axis=-1)
     else:
         # No scaling for discrete actions
         return actions
 
 
-def unscale_actions(scaled_actions: np.ndarray, action_space: spaces.Space) -> np.ndarray:
+def unscale_actions(
+    scaled_actions: np.ndarray, action_space: spaces.Space
+) -> np.ndarray:
     """
     Rescale the action from [-1, 1] to [low, high]
     (no need for symmetric action space)
@@ -94,10 +104,16 @@ def unscale_actions(scaled_actions: np.ndarray, action_space: spaces.Space) -> n
         low, high = action_space.low, action_space.high
         return low + (0.5 * (scaled_actions + 1.0) * (high - low))
     elif isinstance(action_space, (spaces.Dict, spaces.Tuple)):
-        list_spaces = action_space.spaces.values() if isinstance(action_space, spaces.Dict) else action_space.spaces
+        list_spaces = (
+            action_space.spaces.values()
+            if isinstance(action_space, spaces.Dict)
+            else action_space.spaces
+        )
         dims = [get_action_dim(s) for s in list_spaces]
         split_actions = np.split(scaled_actions, np.cumsum(dims)[:-1], axis=-1)
-        list_unscaled = [unscale_actions(a, s) for a, s in zip(split_actions, list_spaces)]
+        list_unscaled = [
+            unscale_actions(a, s) for a, s in zip(split_actions, list_spaces)
+        ]
         return np.concatenate(list_unscaled, axis=-1)
     else:
         # No scaling for discrete actions
@@ -115,7 +131,11 @@ def clip_actions(actions: np.ndarray, action_space: spaces.Space) -> np.ndarray:
     if isinstance(action_space, spaces.Box):
         return np.clip(actions, action_space.low, action_space.high)
     elif isinstance(action_space, (spaces.Dict, spaces.Tuple)):
-        list_spaces = action_space.spaces.values() if isinstance(action_space, spaces.Dict) else action_space.spaces
+        list_spaces = (
+            action_space.spaces.values()
+            if isinstance(action_space, spaces.Dict)
+            else action_space.spaces
+        )
         dims = [get_action_dim(s) for s in list_spaces]
         split_actions = np.split(actions, np.cumsum(dims)[:-1], axis=-1)
         list_clipped = [clip_actions(a, s) for a, s in zip(split_actions, list_spaces)]

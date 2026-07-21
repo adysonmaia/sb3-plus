@@ -4,20 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sb3-plus"
-version = "0.1.6"
-authors = [
-  { name="Adyson Maia", email="adyson.maia@gmail.com" },
-]
+version = "0.1.7"
+authors = [{ name = "Adyson Maia", email = "adyson.maia@gmail.com" }]
 description = "Additional RL algorithms to the StableBaselines3 lib"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
 ]
-dependencies = [
-    'stable-baselines3>=2.0.0',
-]
+dependencies = ['stable-baselines3>=2.9.0']
 
 [project.urls]
 "Homepage" = "https://github.com/adysonmaia/sb3-plus"

@@ -1,10 +1,12 @@
-from .type_aliases import SafeRolloutBufferSamples, SafeDictRolloutBufferSamples
-from stable_baselines3.common.vec_env import VecNormalize
-from stable_baselines3.common.buffers import BaseBuffer
-from typing import Dict, Generator, Optional, Union
+from typing import Generator
+
 import numpy as np
 import torch as th
 from gymnasium import spaces
+from stable_baselines3.common.buffers import BaseBuffer
+from stable_baselines3.common.vec_env import VecNormalize
+
+from .type_aliases import SafeDictRolloutBufferSamples, SafeRolloutBufferSamples
 
 
 class SafeRolloutBuffer(BaseBuffer):
@@ -51,39 +53,55 @@ class SafeRolloutBuffer(BaseBuffer):
         buffer_size: int,
         observation_space: spaces.Space,
         action_space: spaces.Space,
-        device: Union[th.device, str] = "auto",
+        device: th.device | str = "auto",
         gae_lambda: float = 1,
         gamma: float = 0.99,
         n_envs: int = 1,
-        cost_gae_lambda: Optional[float] = None,
-        cost_gamma: Optional[float] = None
+        cost_gae_lambda: float | None = None,
+        cost_gamma: float | None = None,
     ):
 
-        super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
+        super().__init__(
+            buffer_size, observation_space, action_space, device, n_envs=n_envs
+        )
         self.gae_lambda = gae_lambda
         self.gamma = gamma
         self.generator_ready = False
-        self.cost_gae_lambda = cost_gae_lambda if cost_gae_lambda is not None else self.gae_lambda
+        self.cost_gae_lambda = (
+            cost_gae_lambda if cost_gae_lambda is not None else self.gae_lambda
+        )
         self.cost_gamma = cost_gamma if cost_gamma is not None else self.gamma
         self.reset()
 
     def reset(self) -> None:
-        self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=np.float32)
-        self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float32)
+        self.observations = np.zeros(
+            (self.buffer_size, self.n_envs, *self.obs_shape),
+            dtype=self.observation_space.dtype,
+        )
+        self.actions = np.zeros(
+            (self.buffer_size, self.n_envs, self.action_dim),
+            dtype=self.action_space.dtype,
+        )
         self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        self.episode_starts = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.episode_starts = np.zeros(
+            (self.buffer_size, self.n_envs), dtype=np.float32
+        )
         self.values = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.log_probs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.costs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.cost_returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        self.cost_advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.cost_advantages = np.zeros(
+            (self.buffer_size, self.n_envs), dtype=np.float32
+        )
         self.cost_values = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.generator_ready = False
         super().reset()
 
-    def compute_returns_and_advantage(self, last_values: th.Tensor, last_cost_values: th.Tensor, dones: np.ndarray) -> None:
+    def compute_returns_and_advantage(
+        self, last_values: th.Tensor, last_cost_values: th.Tensor, dones: np.ndarray
+    ) -> None:
         """
         Post-processing step: compute the lambda-return (TD(lambda) estimate)
         and GAE(lambda) advantage.
@@ -104,26 +122,42 @@ class SafeRolloutBuffer(BaseBuffer):
         :param dones: if the last step was a terminal step (one bool for each env).
         """
         # Convert to numpy
-        last_values = last_values.clone().cpu().numpy().flatten()
-        last_cost_values = last_cost_values.clone().cpu().numpy().flatten()
+        last_values = last_values.clone().cpu().numpy().flatten()  # type: ignore[assignment]
+        last_cost_values = last_cost_values.clone().cpu().numpy().flatten()  # type: ignore[assignment]
 
         last_gae_lam = 0
         last_cost_gae_lam = 0
         for step in reversed(range(self.buffer_size)):
             if step == self.buffer_size - 1:
-                next_non_terminal = 1.0 - dones
+                next_non_terminal = 1.0 - dones.astype(np.float32)
                 next_values = last_values
                 next_cost_values = last_cost_values
             else:
                 next_non_terminal = 1.0 - self.episode_starts[step + 1]
                 next_values = self.values[step + 1]
                 next_cost_values = self.cost_values[step + 1]
-            delta = self.rewards[step] + self.gamma * next_values * next_non_terminal - self.values[step]
-            last_gae_lam = delta + self.gamma * self.gae_lambda * next_non_terminal * last_gae_lam
+            delta = (
+                self.rewards[step]
+                + self.gamma * next_values * next_non_terminal
+                - self.values[step]
+            )
+            last_gae_lam = (
+                delta + self.gamma * self.gae_lambda * next_non_terminal * last_gae_lam
+            )
             self.advantages[step] = last_gae_lam
 
-            cost_delta = self.costs[step] + self.cost_gamma * next_cost_values * next_non_terminal - self.cost_values[step]
-            last_cost_gae_lam = cost_delta + self.cost_gamma * self.cost_gae_lambda * next_non_terminal * last_cost_gae_lam
+            cost_delta = (
+                self.costs[step]
+                + self.cost_gamma * next_cost_values * next_non_terminal
+                - self.cost_values[step]
+            )
+            last_cost_gae_lam = (
+                cost_delta
+                + self.cost_gamma
+                * self.cost_gae_lambda
+                * next_non_terminal
+                * last_cost_gae_lam
+            )
             self.cost_advantages[step] = last_cost_gae_lam
 
         # TD(lambda) estimator, see Github PR #375 or "Telescoping in TD(lambda)"
@@ -167,19 +201,21 @@ class SafeRolloutBuffer(BaseBuffer):
         # Same reshape, for actions
         action = action.reshape((self.n_envs, self.action_dim))
 
-        self.observations[self.pos] = np.array(obs).copy()
-        self.actions[self.pos] = np.array(action).copy()
-        self.rewards[self.pos] = np.array(reward).copy()
-        self.episode_starts[self.pos] = np.array(episode_start).copy()
+        self.observations[self.pos] = np.array(obs)
+        self.actions[self.pos] = np.array(action)
+        self.rewards[self.pos] = np.array(reward)
+        self.episode_starts[self.pos] = np.array(episode_start)
         self.values[self.pos] = value.clone().cpu().numpy().flatten()
         self.log_probs[self.pos] = log_prob.clone().cpu().numpy()
-        self.costs[self.pos] = np.array(cost).copy()
+        self.costs[self.pos] = np.array(cost)
         self.cost_values[self.pos] = cost_value.clone().cpu().numpy().flatten()
         self.pos += 1
         if self.pos == self.buffer_size:
             self.full = True
 
-    def get(self, batch_size: Optional[int] = None) -> Generator[SafeRolloutBufferSamples, None, None]:
+    def get(
+        self, batch_size: int | None = None
+    ) -> Generator[SafeRolloutBufferSamples, None, None]:
         assert self.full, ""
         indices = np.random.permutation(self.buffer_size * self.n_envs)
         # Prepare the data
@@ -191,7 +227,7 @@ class SafeRolloutBuffer(BaseBuffer):
                 "log_probs",
                 "advantages",
                 "returns",
-                'cost_values',
+                "cost_values",
                 "cost_returns",
                 "cost_advantages",
             ]
@@ -210,13 +246,12 @@ class SafeRolloutBuffer(BaseBuffer):
             start_idx += batch_size
 
     def _get_samples(
-            self,
-            batch_inds: np.ndarray,
-            env: Optional[VecNormalize] = None
+        self, batch_inds: np.ndarray, env: VecNormalize | None = None
     ) -> SafeRolloutBufferSamples:
         data = (
             self.observations[batch_inds],
-            self.actions[batch_inds],
+            # Cast to float32 (backward compatible), this would lead to RuntimeError for MultiBinary space
+            self.actions[batch_inds].astype(np.float32, copy=False),
             self.values[batch_inds].flatten(),
             self.log_probs[batch_inds].flatten(),
             self.advantages[batch_inds].flatten(),
@@ -255,19 +290,21 @@ class SafeDictRolloutBuffer(SafeRolloutBuffer):
     :param cost_gamma: Discount factor for cost returns
     """
 
-    observations: Dict[str, np.ndarray]
+    observation_space: spaces.Dict
+    obs_shape: dict[str, tuple[int, ...]]  # type: ignore[assignment]
+    observations: dict[str, np.ndarray]  # type: ignore[assignment]
 
     def __init__(
         self,
         buffer_size: int,
         observation_space: spaces.Space,
         action_space: spaces.Space,
-        device: Union[th.device, str] = "auto",
+        device: th.device | str = "auto",
         gae_lambda: float = 1,
         gamma: float = 0.99,
         n_envs: int = 1,
-        cost_gae_lambda: Optional[float] = None,
-        cost_gamma: Optional[float] = None
+        cost_gae_lambda: float | None = None,
+        cost_gamma: float | None = None,
     ):
         super().__init__(
             buffer_size,
@@ -278,21 +315,28 @@ class SafeDictRolloutBuffer(SafeRolloutBuffer):
             gamma,
             n_envs=n_envs,
             cost_gae_lambda=cost_gae_lambda,
-            cost_gamma=cost_gamma
+            cost_gamma=cost_gamma,
         )
-        assert isinstance(self.obs_shape, dict), "DictRolloutBuffer must be used with Dict obs space only"
+        assert isinstance(
+            self.obs_shape, dict
+        ), "DictRolloutBuffer must be used with Dict obs space only"
         self.reset()
 
     def reset(self) -> None:
-        assert isinstance(self.obs_shape, dict), "DictRolloutBuffer must be used with Dict obs space only"
+        assert isinstance(
+            self.obs_shape, dict
+        ), "DictRolloutBuffer must be used with Dict obs space only"
         super().reset()
         self.observations = {}
         for key, obs_input_shape in self.obs_shape.items():
-            self.observations[key] = np.zeros((self.buffer_size, self.n_envs, *obs_input_shape), dtype=np.float32)
+            self.observations[key] = np.zeros(
+                (self.buffer_size, self.n_envs, *obs_input_shape),
+                dtype=self.observation_space[key].dtype,
+            )
 
-    def add(
+    def add(  # type: ignore[override]
         self,
-        obs: Dict[str, np.ndarray],
+        obs: dict[str, np.ndarray],
         action: np.ndarray,
         reward: np.ndarray,
         cost: np.ndarray,
@@ -300,7 +344,7 @@ class SafeDictRolloutBuffer(SafeRolloutBuffer):
         value: th.Tensor,
         cost_value: th.Tensor,
         log_prob: th.Tensor,
-    ) -> None:  # pytype: disable=signature-mismatch
+    ) -> None:
         """
         :param obs: Observation
         :param action: Action
@@ -329,20 +373,19 @@ class SafeDictRolloutBuffer(SafeRolloutBuffer):
         # Reshape to handle multi-dim and discrete action spaces, see GH #970 #1392
         action = action.reshape((self.n_envs, self.action_dim))
 
-        self.actions[self.pos] = np.array(action).copy()
-        self.rewards[self.pos] = np.array(reward).copy()
-        self.episode_starts[self.pos] = np.array(episode_start).copy()
+        self.actions[self.pos] = np.array(action)
+        self.rewards[self.pos] = np.array(reward)
+        self.episode_starts[self.pos] = np.array(episode_start)
         self.values[self.pos] = value.clone().cpu().numpy().flatten()
         self.log_probs[self.pos] = log_prob.clone().cpu().numpy()
-        self.costs[self.pos] = np.array(cost).copy()
+        self.costs[self.pos] = np.array(cost)
         self.cost_values[self.pos] = cost_value.clone().cpu().numpy().flatten()
         self.pos += 1
         if self.pos == self.buffer_size:
             self.full = True
 
     def get(
-            self,
-            batch_size: Optional[int] = None
+        self, batch_size: int | None = None
     ) -> Generator[SafeDictRolloutBufferSamples, None, None]:
         assert self.full, ""
         indices = np.random.permutation(self.buffer_size * self.n_envs)
@@ -351,8 +394,16 @@ class SafeDictRolloutBuffer(SafeRolloutBuffer):
             for key, obs in self.observations.items():
                 self.observations[key] = self.swap_and_flatten(obs)
 
-            _tensor_names = ["actions", "values", "log_probs", "advantages", "returns",
-                             'cost_values', "cost_returns", "cost_advantages"]
+            _tensor_names = [
+                "actions",
+                "values",
+                "log_probs",
+                "advantages",
+                "returns",
+                "cost_values",
+                "cost_returns",
+                "cost_advantages",
+            ]
 
             for tensor in _tensor_names:
                 self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])
@@ -364,22 +415,26 @@ class SafeDictRolloutBuffer(SafeRolloutBuffer):
 
         start_idx = 0
         while start_idx < self.buffer_size * self.n_envs:
-            yield self._get_samples(indices[start_idx: start_idx + batch_size])
+            yield self._get_samples(indices[start_idx : start_idx + batch_size])
             start_idx += batch_size
 
     def _get_samples(
-            self,
-            batch_inds: np.ndarray,
-            env: Optional[VecNormalize] = None
+        self, batch_inds: np.ndarray, env: VecNormalize | None = None
     ) -> SafeDictRolloutBufferSamples:
         return SafeDictRolloutBufferSamples(
-            observations={key: self.to_torch(obs[batch_inds]) for (key, obs) in self.observations.items()},
-            actions=self.to_torch(self.actions[batch_inds]),
+            observations={
+                key: self.to_torch(obs[batch_inds])
+                for (key, obs) in self.observations.items()
+            },
+            # Cast to float32 (backward compatible), this would lead to RuntimeError for MultiBinary space
+            actions=self.to_torch(
+                self.actions[batch_inds].astype(np.float32, copy=False)
+            ),
             old_values=self.to_torch(self.values[batch_inds].flatten()),
             old_log_prob=self.to_torch(self.log_probs[batch_inds].flatten()),
             advantages=self.to_torch(self.advantages[batch_inds].flatten()),
             returns=self.to_torch(self.returns[batch_inds].flatten()),
             old_cost_values=self.to_torch(self.cost_values[batch_inds].flatten()),
             cost_returns=self.to_torch(self.cost_returns[batch_inds].flatten()),
-            cost_advantages=self.to_torch(self.cost_advantages[batch_inds].flatten())
+            cost_advantages=self.to_torch(self.cost_advantages[batch_inds].flatten()),
         )

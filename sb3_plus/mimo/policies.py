@@ -1,15 +1,11 @@
-from .distributions import make_proba_distribution, MultiOutputDistribution
-from .preprocessing import scale_actions, unscale_actions, clip_actions, get_action_shape
-from sb3_plus.common.spaces import action_unflatten
-from stable_baselines3.common.type_aliases import Schedule
-from stable_baselines3.common.policies import BasePolicy
-from stable_baselines3.common.torch_layers import (
-    BaseFeaturesExtractor,
-    CombinedExtractor,
-    FlattenExtractor,
-    MlpExtractor,
-    NatureCNN,
-)
+import collections
+import warnings
+from functools import partial
+from typing import Any
+
+import numpy as np
+import torch as th
+from gymnasium import spaces
 from stable_baselines3.common.distributions import (
     BernoulliDistribution,
     CategoricalDistribution,
@@ -18,17 +14,28 @@ from stable_baselines3.common.distributions import (
     MultiCategoricalDistribution,
     StateDependentNoiseDistribution,
 )
-from functools import partial
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
+from stable_baselines3.common.policies import BasePolicy
+from stable_baselines3.common.torch_layers import (
+    BaseFeaturesExtractor,
+    CombinedExtractor,
+    FlattenExtractor,
+    MlpExtractor,
+    NatureCNN,
+)
+from stable_baselines3.common.type_aliases import PyTorchObs, Schedule
 from torch import nn
-from gymnasium import spaces
-import torch as th
-import numpy as np
-import collections
-import warnings
 
+from sb3_plus.common.spaces import action_unflatten
 
-MultiOutputAction = Union[np.ndarray, int, tuple, dict]
+from .distributions import MultiOutputDistribution, make_proba_distribution
+from .preprocessing import (
+    clip_actions,
+    get_action_shape,
+    scale_actions,
+    unscale_actions,
+)
+
+MultiOutputAction = np.ndarray | int | tuple | dict
 
 
 class MultiOutputActorCriticPolicy(BasePolicy):
@@ -58,22 +65,22 @@ class MultiOutputActorCriticPolicy(BasePolicy):
     """
 
     def __init__(
-            self,
-            observation_space: spaces.Space,
-            action_space: spaces.Dict,
-            lr_schedule: Schedule,
-            net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
-            activation_fn: Type[nn.Module] = nn.Tanh,
-            ortho_init: bool = True,
-            use_sde: bool = False,
-            log_std_init: float = 0.0,
-            squash_output: bool = False,
-            features_extractor_class: Type[BaseFeaturesExtractor] = FlattenExtractor,
-            features_extractor_kwargs: Optional[Dict[str, Any]] = None,
-            share_features_extractor: bool = True,
-            normalize_images: bool = True,
-            optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
-            optimizer_kwargs: Optional[Dict[str, Any]] = None,
+        self,
+        observation_space: spaces.Space,
+        action_space: spaces.Dict,
+        lr_schedule: Schedule,
+        net_arch: list[int] | dict[str, list[int]] | None = None,
+        activation_fn: type[nn.Module] = nn.Tanh,
+        ortho_init: bool = True,
+        use_sde: bool = False,
+        log_std_init: float = 0.0,
+        squash_output: bool = False,
+        features_extractor_class: type[BaseFeaturesExtractor] = FlattenExtractor,
+        features_extractor_kwargs: dict[str, Any] | None = None,
+        share_features_extractor: bool = True,
+        normalize_images: bool = True,
+        optimizer_class: type[th.optim.Optimizer] = th.optim.Adam,
+        optimizer_kwargs: dict[str, Any] | None = None,
     ):
         if optimizer_kwargs is None:
             optimizer_kwargs = {}
@@ -92,7 +99,11 @@ class MultiOutputActorCriticPolicy(BasePolicy):
             normalize_images=normalize_images,
         )
 
-        if isinstance(net_arch, list) and len(net_arch) > 0 and isinstance(net_arch[0], dict):
+        if (
+            isinstance(net_arch, list)
+            and len(net_arch) > 0
+            and isinstance(net_arch[0], dict)
+        ):
             warnings.warn(
                 (
                     "As shared layers in the mlp_extractor are removed since SB3 v1.8.0, "
@@ -126,7 +137,9 @@ class MultiOutputActorCriticPolicy(BasePolicy):
         self.log_std_init = log_std_init
         self.dist_kwargs = None
 
-        assert not use_sde, 'Error: State Dependent Exploration not supported for multi output'
+        assert (
+            not use_sde
+        ), "Error: State Dependent Exploration not supported for multi output"
         self.use_sde = use_sde
 
         # Action distribution
@@ -134,10 +147,10 @@ class MultiOutputActorCriticPolicy(BasePolicy):
 
         self._build(lr_schedule)
 
-    def _get_constructor_parameters(self) -> Dict[str, Any]:
+    def _get_constructor_parameters(self) -> dict[str, Any]:
         data = super()._get_constructor_parameters()
 
-        default_none_kwargs = self.dist_kwargs or collections.defaultdict(lambda: None)
+        default_none_kwargs = self.dist_kwargs or collections.defaultdict(lambda: None)  # type: ignore[arg-type, return-value]
 
         data.update(
             dict(
@@ -181,17 +194,29 @@ class MultiOutputActorCriticPolicy(BasePolicy):
 
         latent_dim_pi = self.mlp_extractor.latent_dim_pi
 
-        if isinstance(self.action_dist, (DiagGaussianDistribution, MultiOutputDistribution)):
+        if isinstance(
+            self.action_dist, (DiagGaussianDistribution, MultiOutputDistribution)
+        ):
             self.action_net, self.log_std = self.action_dist.proba_distribution_net(
                 latent_dim=latent_dim_pi, log_std_init=self.log_std_init
             )
         elif isinstance(self.action_dist, StateDependentNoiseDistribution):
             self.action_net, self.log_std = self.action_dist.proba_distribution_net(
-                latent_dim=latent_dim_pi, latent_sde_dim=latent_dim_pi, log_std_init=self.log_std_init
+                latent_dim=latent_dim_pi,
+                latent_sde_dim=latent_dim_pi,
+                log_std_init=self.log_std_init,
             )
-        elif isinstance(self.action_dist,
-                        (CategoricalDistribution, MultiCategoricalDistribution, BernoulliDistribution)):
-            self.action_net = self.action_dist.proba_distribution_net(latent_dim=latent_dim_pi)
+        elif isinstance(
+            self.action_dist,
+            (
+                CategoricalDistribution,
+                MultiCategoricalDistribution,
+                BernoulliDistribution,
+            ),
+        ):
+            self.action_net = self.action_dist.proba_distribution_net(
+                latent_dim=latent_dim_pi
+            )
         else:
             raise NotImplementedError(f"Unsupported distribution '{self.action_dist}'.")
 
@@ -220,9 +245,13 @@ class MultiOutputActorCriticPolicy(BasePolicy):
                 module.apply(partial(self.init_weights, gain=gain))
 
         # Setup optimizer with initial learning rate
-        self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
+        self.optimizer = self.optimizer_class(
+            self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs
+        )  # type: ignore[call-arg]
 
-    def forward(self, obs: th.Tensor, deterministic: bool = False) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+    def forward(
+        self, obs: th.Tensor, deterministic: bool = False
+    ) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
         """
         Forward pass in all the networks (actor and critic)
         :param obs: Observation
@@ -245,16 +274,27 @@ class MultiOutputActorCriticPolicy(BasePolicy):
         actions = actions.reshape((-1, *get_action_shape(self.action_space)))
         return actions, values, log_prob
 
-    def extract_features(self, obs: th.Tensor) -> Union[th.Tensor, Tuple[th.Tensor, th.Tensor]]:
+    def extract_features(  # type: ignore[override]
+        self, obs: PyTorchObs, features_extractor: BaseFeaturesExtractor | None = None
+    ) -> th.Tensor | tuple[th.Tensor, th.Tensor]:
         """
         Preprocess the observation if needed and extract features.
 
         :param obs: Observation
-        :return: the output of the features extractor(s)
+        :param features_extractor: The features extractor to use. If None, then ``self.features_extractor`` is used.
+        :return: The extracted features. If features extractor is not shared, returns a tuple with the
+            features for the actor and the features for the critic.
         """
         if self.share_features_extractor:
-            return super().extract_features(obs, self.features_extractor)
+            if features_extractor is None:
+                features_extractor = self.features_extractor
+            return super().extract_features(obs, features_extractor)
         else:
+            if features_extractor is not None:
+                warnings.warn(
+                    "Provided features_extractor will be ignored because the features extractor is not shared.",
+                    UserWarning,
+                )
             pi_features = super().extract_features(obs, self.pi_features_extractor)
             vf_features = super().extract_features(obs, self.vf_features_extractor)
             return pi_features, vf_features
@@ -279,28 +319,34 @@ class MultiOutputActorCriticPolicy(BasePolicy):
             # Here mean_actions are the logits (before rounding to get the binary actions)
             return self.action_dist.proba_distribution(action_logits=mean_actions)
         elif isinstance(self.action_dist, StateDependentNoiseDistribution):
-            return self.action_dist.proba_distribution(mean_actions, self.log_std, latent_pi)
+            return self.action_dist.proba_distribution(
+                mean_actions, self.log_std, latent_pi
+            )
         elif isinstance(self.action_dist, MultiOutputDistribution):
             return self.action_dist.proba_distribution(mean_actions, self.log_std)
         else:
             raise ValueError("Invalid action distribution")
 
-    def _predict(self, observation: th.Tensor, deterministic: bool = False) -> th.Tensor:
+    def _predict(
+        self, observation: th.Tensor, deterministic: bool = False
+    ) -> th.Tensor:
         """
         Get the action according to the policy for a given observation.
         :param observation:
         :param deterministic: Whether to use stochastic or deterministic actions
         :return: Taken action according to the policy
         """
-        return self.get_distribution(observation).get_actions(deterministic=deterministic)
+        return self.get_distribution(observation).get_actions(
+            deterministic=deterministic
+        )
 
     def predict(
-            self,
-            observation: Union[np.ndarray, Dict[str, np.ndarray]],
-            state: Optional[Tuple[np.ndarray, ...]] = None,
-            episode_start: Optional[np.ndarray] = None,
-            deterministic: bool = False,
-    ) -> Tuple[MultiOutputAction, Optional[Tuple[np.ndarray, ...]]]:
+        self,
+        observation: np.ndarray | dict[str, np.ndarray],
+        state: tuple[np.ndarray, ...] | None = None,
+        episode_start: np.ndarray | None = None,
+        deterministic: bool = False,
+    ) -> tuple[MultiOutputAction, tuple[np.ndarray, ...] | None]:
         """
         Get the policy action from an observation (and optional hidden state).
         Includes sugar-coating to handle different observations (e.g. normalizing images).
@@ -317,12 +363,27 @@ class MultiOutputActorCriticPolicy(BasePolicy):
         # Switch to eval mode (this affects batch norm / dropout)
         self.set_training_mode(False)
 
-        observation, vectorized_env = self.obs_to_tensor(observation)
+        # Check for common mistake that the user does not mix Gym/VecEnv API
+        # Tuple obs are not supported by SB3, so we can safely do that check
+        if (
+            isinstance(observation, tuple)
+            and len(observation) == 2
+            and isinstance(observation[1], dict)
+        ):
+            raise ValueError(
+                "You have passed a tuple to the predict() function instead of a Numpy array or a Dict. "
+                "You are probably mixing Gym API with SB3 VecEnv API: `obs, info = env.reset()` (Gym) "
+                "vs `obs = vec_env.reset()` (SB3 VecEnv). "
+                "See related issue https://github.com/DLR-RM/stable-baselines3/issues/1694 "
+                "and documentation for more information: https://stable-baselines3.readthedocs.io/en/master/guide/vec_envs.html#vecenv-api-vs-gym-api"
+            )
+
+        obs_tensor, vectorized_env = self.obs_to_tensor(observation)
 
         with th.no_grad():
-            actions = self._predict(observation, deterministic=deterministic)
+            actions = self._predict(obs_tensor, deterministic=deterministic)
         # Convert to numpy, and reshape to the original action shape
-        actions = actions.cpu().numpy().reshape((-1, *get_action_shape(self.action_space)))
+        actions = actions.cpu().numpy().reshape((-1, *get_action_shape(self.action_space)))  # type: ignore[misc, assignment]
 
         if isinstance(self.action_space, (spaces.Box, spaces.Dict, spaces.Tuple)):
             if self.squash_output:
@@ -335,13 +396,16 @@ class MultiOutputActorCriticPolicy(BasePolicy):
 
         # Remove batch dimension if needed
         if not vectorized_env:
-            actions = actions.squeeze(axis=0)
+            assert isinstance(actions, np.ndarray)
+            actions = actions.squeeze(axis=0)  # type: ignore[assignment]
 
         # Convert from numpy.ndarray to dict or tuple
-        if not vectorized_env and isinstance(self.action_space, (spaces.Dict, spaces.Tuple)):
+        if not vectorized_env and isinstance(
+            self.action_space, (spaces.Dict, spaces.Tuple)
+        ):
             actions = action_unflatten(self.action_space, actions)
 
-        return actions, state
+        return actions, state  # type: ignore[return-value]
 
     def scale_action(self, action: np.ndarray) -> np.ndarray:
         """
@@ -360,7 +424,9 @@ class MultiOutputActorCriticPolicy(BasePolicy):
         """
         return unscale_actions(scaled_action, self.action_space)
 
-    def evaluate_actions(self, obs: th.Tensor, actions: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+    def evaluate_actions(
+        self, obs: PyTorchObs, actions: th.Tensor
+    ) -> tuple[th.Tensor, th.Tensor, th.Tensor | None]:
         """
         Evaluate actions according to the current policy,
         given the observations.
@@ -383,7 +449,7 @@ class MultiOutputActorCriticPolicy(BasePolicy):
         entropy = distribution.entropy()
         return values, log_prob, entropy
 
-    def get_distribution(self, obs: th.Tensor) -> Distribution:
+    def get_distribution(self, obs: PyTorchObs) -> Distribution:
         """
         Get the current policy distribution given the observations.
         :param obs:
@@ -393,7 +459,7 @@ class MultiOutputActorCriticPolicy(BasePolicy):
         latent_pi = self.mlp_extractor.forward_actor(features)
         return self._get_action_dist_from_latent(latent_pi)
 
-    def predict_values(self, obs: th.Tensor) -> th.Tensor:
+    def predict_values(self, obs: PyTorchObs) -> th.Tensor:
         """
         Get the estimated values according to the current policy given the observations.
         :param obs:
@@ -431,22 +497,22 @@ class MIMOActorCriticPolicy(MultiOutputActorCriticPolicy):
     """
 
     def __init__(
-            self,
-            observation_space: spaces.Dict,
-            action_space: spaces.Dict,
-            lr_schedule: Schedule,
-            net_arch: Union[List[int], Dict[str, List[int]], List[Dict[str, List[int]]], None] = None,
-            activation_fn: Type[nn.Module] = nn.Tanh,
-            ortho_init: bool = True,
-            use_sde: bool = False,
-            log_std_init: float = 0.0,
-            squash_output: bool = False,
-            features_extractor_class: Type[BaseFeaturesExtractor] = CombinedExtractor,
-            features_extractor_kwargs: Optional[Dict[str, Any]] = None,
-            share_features_extractor: bool = True,
-            normalize_images: bool = True,
-            optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
-            optimizer_kwargs: Optional[Dict[str, Any]] = None,
+        self,
+        observation_space: spaces.Dict,
+        action_space: spaces.Dict,
+        lr_schedule: Schedule,
+        net_arch: list[int] | dict[str, list[int]] | None = None,
+        activation_fn: type[nn.Module] = nn.Tanh,
+        ortho_init: bool = True,
+        use_sde: bool = False,
+        log_std_init: float = 0.0,
+        squash_output: bool = False,
+        features_extractor_class: type[BaseFeaturesExtractor] = CombinedExtractor,
+        features_extractor_kwargs: dict[str, Any] | None = None,
+        share_features_extractor: bool = True,
+        normalize_images: bool = True,
+        optimizer_class: type[th.optim.Optimizer] = th.optim.Adam,
+        optimizer_kwargs: dict[str, Any] | None = None,
     ):
         super().__init__(
             observation_space,
@@ -460,8 +526,8 @@ class MIMOActorCriticPolicy(MultiOutputActorCriticPolicy):
             squash_output,
             features_extractor_class,
             features_extractor_kwargs,
-            normalize_images,
             share_features_extractor,
+            normalize_images,
             optimizer_class,
             optimizer_kwargs,
         )

@@ -1,17 +1,19 @@
-from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
-from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
-from stable_baselines3.common.policies import ActorCriticPolicy
-from stable_baselines3.common.vec_env import VecEnv
-from stable_baselines3.common.env_util import is_wrapped
-from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.utils import obs_as_tensor, safe_mean
-from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
-from gymnasium import spaces
-import torch as th
+from typing import Any
 
+import torch as th
+from gymnasium import spaces
+from stable_baselines3.common.buffers import RolloutBuffer
+from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.env_util import is_wrapped
+from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
+from stable_baselines3.common.policies import ActorCriticPolicy
+from stable_baselines3.common.type_aliases import GymEnv, Schedule
+from stable_baselines3.common.utils import obs_as_tensor
+from stable_baselines3.common.vec_env import VecEnv
+
+from .buffers import MultiOutputDictRolloutBuffer, MultiOutputRolloutBuffer
 from .policies import MultiOutputActorCriticPolicy
-from .buffers import MultiOutputRolloutBuffer, MultiOutputDictRolloutBuffer
-from .preprocessing import clip_actions
+from .preprocessing import clip_actions, unscale_actions
 from .wrappers import MultiOutputEnv
 
 
@@ -35,6 +37,8 @@ class MultiOutputOnPolicyAlgorithm(OnPolicyAlgorithm):
         instead of action noise exploration (default: False)
     :param sde_sample_freq: Sample a new noise matrix every n steps when using gSDE
         Default: -1 (only sample at the beginning of the rollout)
+    :param rollout_buffer_class: Rollout buffer class to use. If ``None``, it will be automatically selected.
+    :param rollout_buffer_kwargs: Keyword arguments to pass to the rollout buffer on creation.
     :param stats_window_size: Window size for the rollout logging, specifying the number of episodes to average
         the reported success rate, mean episode length, and mean reward over
     :param tensorboard_log: the log location for tensorboard (if None, no logging)
@@ -51,30 +55,32 @@ class MultiOutputOnPolicyAlgorithm(OnPolicyAlgorithm):
     """
 
     rollout_buffer: MultiOutputRolloutBuffer
-    policy: Union[MultiOutputActorCriticPolicy, ActorCriticPolicy]
+    policy: MultiOutputActorCriticPolicy | ActorCriticPolicy
 
     def __init__(
-            self,
-            policy: Union[str, Type[ActorCriticPolicy], Type[MultiOutputActorCriticPolicy]],
-            env: Union[GymEnv, str],
-            learning_rate: Union[float, Schedule],
-            n_steps: int,
-            gamma: float,
-            gae_lambda: float,
-            ent_coef: float,
-            vf_coef: float,
-            max_grad_norm: float,
-            use_sde: bool,
-            sde_sample_freq: int,
-            stats_window_size: int = 100,
-            tensorboard_log: Optional[str] = None,
-            monitor_wrapper: bool = True,
-            policy_kwargs: Optional[Dict[str, Any]] = None,
-            verbose: int = 0,
-            seed: Optional[int] = None,
-            device: Union[th.device, str] = "auto",
-            _init_setup_model: bool = True,
-            supported_action_spaces: Optional[Tuple[Type[spaces.Space], ...]] = None,
+        self,
+        policy: str | type[ActorCriticPolicy] | type[MultiOutputActorCriticPolicy],
+        env: GymEnv | str,
+        learning_rate: float | Schedule,
+        n_steps: int,
+        gamma: float,
+        gae_lambda: float,
+        ent_coef: float,
+        vf_coef: float,
+        max_grad_norm: float,
+        use_sde: bool,
+        sde_sample_freq: int,
+        rollout_buffer_class: type[RolloutBuffer] | None = None,
+        rollout_buffer_kwargs: dict[str, Any] | None = None,
+        stats_window_size: int = 100,
+        tensorboard_log: str | None = None,
+        monitor_wrapper: bool = True,
+        policy_kwargs: dict[str, Any] | None = None,
+        verbose: int = 0,
+        seed: int | None = None,
+        device: th.device | str = "auto",
+        _init_setup_model: bool = True,
+        supported_action_spaces: tuple[type[spaces.Space], ...] | None = None,
     ):
         super().__init__(
             policy=policy,
@@ -88,6 +94,8 @@ class MultiOutputOnPolicyAlgorithm(OnPolicyAlgorithm):
             max_grad_norm=max_grad_norm,
             use_sde=use_sde,
             sde_sample_freq=sde_sample_freq,
+            rollout_buffer_class=rollout_buffer_class,
+            rollout_buffer_kwargs=rollout_buffer_kwargs,
             stats_window_size=stats_window_size,
             tensorboard_log=tensorboard_log,
             monitor_wrapper=monitor_wrapper,
@@ -103,44 +111,55 @@ class MultiOutputOnPolicyAlgorithm(OnPolicyAlgorithm):
         self._setup_lr_schedule()
         self.set_random_seed(self.seed)
 
-        buffer_cls = None
-        if isinstance(self.observation_space, spaces.Dict):
-            buffer_cls = MultiOutputDictRolloutBuffer
-        else:
-            buffer_cls = MultiOutputRolloutBuffer
+        if self.rollout_buffer_class is None:
+            if isinstance(self.observation_space, spaces.Dict):
+                self.rollout_buffer_class = MultiOutputDictRolloutBuffer
+            else:
+                self.rollout_buffer_class = MultiOutputRolloutBuffer
 
-        self.rollout_buffer = buffer_cls(
+        self.rollout_buffer = self.rollout_buffer_class(
             self.n_steps,
-            self.observation_space,
+            self.observation_space,  # type: ignore[arg-type]
             self.action_space,
             device=self.device,
             gamma=self.gamma,
             gae_lambda=self.gae_lambda,
             n_envs=self.n_envs,
+            **self.rollout_buffer_kwargs,
         )
-        # pytype:disable=not-instantiable
         self.policy = self.policy_class(  # type: ignore[assignment]
-            self.observation_space, self.action_space, self.lr_schedule, use_sde=self.use_sde, **self.policy_kwargs
+            self.observation_space,
+            self.action_space,
+            self.lr_schedule,
+            use_sde=self.use_sde,
+            **self.policy_kwargs,
         )
-        # pytype:enable=not-instantiable
         self.policy = self.policy.to(self.device)
+        # Warn when not using CPU with MlpPolicy
+        self._maybe_recommend_cpu()
 
     @staticmethod
-    def _wrap_env(env: GymEnv, verbose: int = 0, monitor_wrapper: bool = True) -> VecEnv:
+    def _wrap_env(
+        env: GymEnv, verbose: int = 0, monitor_wrapper: bool = True
+    ) -> VecEnv:
         # Wrapping multi-output environments
         has_multi_output = isinstance(env.action_space, (spaces.Dict, spaces.Tuple))
-        if has_multi_output and not is_wrapped(env, MultiOutputEnv) and not isinstance(env, VecEnv):
+        if (
+            has_multi_output
+            and not is_wrapped(env, MultiOutputEnv)
+            and not isinstance(env, VecEnv)
+        ):
             if verbose >= 1:
                 print("Wrapping the env with a `MultiOutput` wrapper")
             env = MultiOutputEnv(env)
         return OnPolicyAlgorithm._wrap_env(env, verbose, monitor_wrapper)
 
     def collect_rollouts(
-            self,
-            env: VecEnv,
-            callback: BaseCallback,
-            rollout_buffer: MultiOutputRolloutBuffer,
-            n_rollout_steps: int,
+        self,
+        env: VecEnv,
+        callback: BaseCallback,
+        rollout_buffer: MultiOutputRolloutBuffer,
+        n_rollout_steps: int,
     ) -> bool:
         """
         Collect experiences using the current policy and fill a ``RolloutBuffer``.
@@ -168,21 +187,33 @@ class MultiOutputOnPolicyAlgorithm(OnPolicyAlgorithm):
         callback.on_rollout_start()
 
         while n_steps < n_rollout_steps:
-            if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
+            if (
+                self.use_sde
+                and self.sde_sample_freq > 0
+                and n_steps % self.sde_sample_freq == 0
+            ):
                 # Sample a new noise matrix
                 self.policy.reset_noise(env.num_envs)
 
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
-                obs_tensor = obs_as_tensor(self._last_obs, self.device)
+                obs_tensor = obs_as_tensor(self._last_obs, self.device)  # type: ignore[arg-type]
                 actions, values, log_probs = self.policy(obs_tensor)
             actions = actions.cpu().numpy()
 
             # Rescale and perform action
             clipped_actions = actions
+
             # Clip the actions to avoid out of bound error
             if isinstance(self.action_space, (spaces.Box, spaces.Dict)):
-                clipped_actions = clip_actions(actions, self.action_space)
+                if self.policy.squash_output:
+                    # Unscale the actions to match env bounds
+                    # if they were previously squashed (scaled in [-1, 1])
+                    clipped_actions = unscale_actions(
+                        clipped_actions, self.action_space
+                    )
+                else:
+                    clipped_actions = clip_actions(actions, self.action_space)
 
             new_obs, rewards, dones, infos = env.step(clipped_actions)
 
@@ -190,10 +221,10 @@ class MultiOutputOnPolicyAlgorithm(OnPolicyAlgorithm):
 
             # Give access to local variables
             callback.update_locals(locals())
-            if callback.on_step() is False:
+            if not callback.on_step():
                 return False
 
-            self._update_info_buffer(infos)
+            self._update_info_buffer(infos, dones)
             n_steps += 1
 
             # TODO: what to do for Dict space ?
@@ -205,13 +236,15 @@ class MultiOutputOnPolicyAlgorithm(OnPolicyAlgorithm):
             # see GitHub issue #633
             for idx, done in enumerate(dones):
                 if (
-                        done
-                        and infos[idx].get("terminal_observation") is not None
-                        and infos[idx].get("TimeLimit.truncated", False)
+                    done
+                    and infos[idx].get("terminal_observation") is not None
+                    and infos[idx].get("TimeLimit.truncated", False)
                 ):
-                    terminal_obs = self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
+                    terminal_obs = self.policy.obs_to_tensor(
+                        infos[idx]["terminal_observation"]
+                    )[0]
                     with th.no_grad():
-                        terminal_value = self.policy.predict_values(terminal_obs)[0]
+                        terminal_value = self.policy.predict_values(terminal_obs)[0]  # type: ignore[arg-type]
                     rewards[idx] += self.gamma * terminal_value
 
             rollout_buffer.add(
@@ -219,7 +252,8 @@ class MultiOutputOnPolicyAlgorithm(OnPolicyAlgorithm):
                 actions,
                 rewards,
                 self._last_episode_starts,  # type: ignore[arg-type]
-                values, log_probs,
+                values,
+                log_probs,
             )
             self._last_obs = new_obs  # type: ignore[assignment]
             self._last_episode_starts = dones
@@ -229,6 +263,8 @@ class MultiOutputOnPolicyAlgorithm(OnPolicyAlgorithm):
             values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))  # type: ignore[arg-type]
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
+
+        callback.update_locals(locals())
 
         callback.on_rollout_end()
 

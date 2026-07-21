@@ -1,25 +1,30 @@
 import warnings
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable
 
 import gymnasium as gym
 import numpy as np
-
 from stable_baselines3.common import type_aliases
-from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, VecMonitor, is_vecenv_wrapped
+from stable_baselines3.common.vec_env import (
+    DummyVecEnv,
+    VecEnv,
+    VecMonitor,
+    is_vecenv_wrapped,
+)
+
 from .type_aliases import PENALTY_COST_INFO_KEY
 
 
 def evaluate_safe_policy(
     model: "type_aliases.PolicyPredictor",
-    env: Union[gym.Env, VecEnv],
+    env: gym.Env | VecEnv,
     n_eval_episodes: int = 10,
     deterministic: bool = True,
     render: bool = False,
-    callback: Optional[Callable[[Dict[str, Any], Dict[str, Any]], None]] = None,
-    reward_threshold: Optional[float] = None,
+    callback: Callable[[dict[str, Any], dict[str, Any]], None] | None = None,
+    reward_threshold: float | None = None,
     return_episode_rewards: bool = False,
     warn: bool = True,
-) -> Union[Tuple[float, float, float, float], Tuple[List[float], List[float], List[int]]]:
+) -> tuple[float, float, float, float] | tuple[list[float], list[float], list[int]]:
     """
     Runs policy for ``n_eval_episodes`` episodes and returns average reward.
     If a vector env is passed in, this divides the episodes to evaluate onto the
@@ -50,7 +55,7 @@ def evaluate_safe_policy(
         per episode will be returned instead of the mean.
     :param warn: If True (default), warns user about lack of a Monitor wrapper in the
         evaluation environment.
-    :return: Mean reward per episode, std of reward per episode.
+    :return: Mean reward per episode, std of reward per episode, Mean cost per episode, std of cost per episode.
         Returns ([float], [int]) when ``return_episode_rewards`` is True, first
         list containing per-episode rewards and second containing per-episode lengths
         (in number of steps).
@@ -62,7 +67,9 @@ def evaluate_safe_policy(
     if not isinstance(env, VecEnv):
         env = DummyVecEnv([lambda: env])  # type: ignore[list-item, return-value]
 
-    is_monitor_wrapped = is_vecenv_wrapped(env, VecMonitor) or env.env_is_wrapped(Monitor)[0]
+    is_monitor_wrapped = (
+        is_vecenv_wrapped(env, VecMonitor) or env.env_is_wrapped(Monitor)[0]
+    )
 
     if not is_monitor_wrapped and warn:
         warnings.warn(
@@ -79,7 +86,9 @@ def evaluate_safe_policy(
 
     episode_counts = np.zeros(n_envs, dtype="int")
     # Divides episodes among different sub environments in the vector as evenly as possible
-    episode_count_targets = np.array([(n_eval_episodes + i) // n_envs for i in range(n_envs)], dtype="int")
+    episode_count_targets = np.array(
+        [(n_eval_episodes + i) // n_envs for i in range(n_envs)], dtype="int"
+    )
 
     current_rewards = np.zeros(n_envs)
     current_costs = np.zeros(n_envs)
@@ -143,7 +152,10 @@ def evaluate_safe_policy(
     mean_cost = np.mean(episode_costs)
     std_cost = np.std(episode_costs)
     if reward_threshold is not None:
-        assert mean_reward > reward_threshold, "Mean reward below threshold: " f"{mean_reward:.2f} < {reward_threshold:.2f}"
+        assert mean_reward > reward_threshold, (
+            "Mean reward below threshold: "
+            f"{mean_reward:.2f} < {reward_threshold:.2f}"
+        )
     if return_episode_rewards:
         return episode_rewards, episode_costs, episode_lengths
     return mean_reward, std_reward, mean_cost, std_cost

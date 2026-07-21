@@ -1,18 +1,21 @@
-from .torch_layers import SafeMlpExtractor
+import warnings
+from functools import partial
+from typing import Any
+
+import numpy as np
+import torch as th
+from gymnasium import spaces
+from stable_baselines3.common.policies import ActorCriticPolicy, BasePolicy
 from stable_baselines3.common.torch_layers import (
     BaseFeaturesExtractor,
     CombinedExtractor,
     FlattenExtractor,
     NatureCNN,
 )
-from stable_baselines3.common.type_aliases import Schedule
-from stable_baselines3.common.policies import ActorCriticPolicy, BasePolicy
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
-from functools import partial
-from gymnasium import spaces
+from stable_baselines3.common.type_aliases import PyTorchObs, Schedule
 from torch import nn
-import numpy as np
-import torch as th
+
+from .torch_layers import SafeMlpExtractor
 
 
 class SafeActorCriticPolicy(ActorCriticPolicy):
@@ -51,24 +54,24 @@ class SafeActorCriticPolicy(ActorCriticPolicy):
     cost_value_net: nn.Module
 
     def __init__(
-            self,
-            observation_space: spaces.Space,
-            action_space: spaces.Space,
-            lr_schedule: Schedule,
-            net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
-            activation_fn: Type[nn.Module] = nn.Tanh,
-            ortho_init: bool = True,
-            use_sde: bool = False,
-            log_std_init: float = 0.0,
-            full_std: bool = True,
-            use_expln: bool = False,
-            squash_output: bool = False,
-            features_extractor_class: Type[BaseFeaturesExtractor] = FlattenExtractor,
-            features_extractor_kwargs: Optional[Dict[str, Any]] = None,
-            share_features_extractor: bool = True,
-            normalize_images: bool = True,
-            optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
-            optimizer_kwargs: Optional[Dict[str, Any]] = None,
+        self,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        lr_schedule: Schedule,
+        net_arch: list[int] | dict[str, list[int]] | None = None,
+        activation_fn: type[nn.Module] = nn.Tanh,
+        ortho_init: bool = True,
+        use_sde: bool = False,
+        log_std_init: float = 0.0,
+        full_std: bool = True,
+        use_expln: bool = False,
+        squash_output: bool = False,
+        features_extractor_class: type[BaseFeaturesExtractor] = FlattenExtractor,
+        features_extractor_kwargs: dict[str, Any] | None = None,
+        share_features_extractor: bool = True,
+        normalize_images: bool = True,
+        optimizer_class: type[th.optim.Optimizer] = th.optim.Adam,
+        optimizer_kwargs: dict[str, Any] | None = None,
     ):
         super().__init__(
             observation_space=observation_space,
@@ -87,7 +90,7 @@ class SafeActorCriticPolicy(ActorCriticPolicy):
             share_features_extractor=share_features_extractor,
             normalize_images=normalize_images,
             optimizer_class=optimizer_class,
-            optimizer_kwargs=optimizer_kwargs
+            optimizer_kwargs=optimizer_kwargs,
         )
 
     def _build(self, lr_schedule: Schedule) -> None:
@@ -111,9 +114,9 @@ class SafeActorCriticPolicy(ActorCriticPolicy):
                 module.apply(partial(self.init_weights, gain=gain))
 
         # Setup optimizer with initial learning rate and actor-critic parameters, including cost critic/value params
-        self.optimizer = self.optimizer_class(self.parameters(),
-                                              lr=lr_schedule(1),
-                                              **self.optimizer_kwargs)
+        self.optimizer = self.optimizer_class(
+            self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs
+        )
 
     def _build_mlp_extractor(self) -> None:
         """
@@ -130,7 +133,9 @@ class SafeActorCriticPolicy(ActorCriticPolicy):
             device=self.device,
         )
 
-    def forward(self, obs: th.Tensor, deterministic: bool = False) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+    def forward(
+        self, obs: th.Tensor, deterministic: bool = False
+    ) -> tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
         """
         Forward pass in all the networks (actor and critic)
 
@@ -153,11 +158,12 @@ class SafeActorCriticPolicy(ActorCriticPolicy):
         distribution = self._get_action_dist_from_latent(latent_pi)
         actions = distribution.get_actions(deterministic=deterministic)
         log_prob = distribution.log_prob(actions)
-        actions = actions.reshape((-1, *self.action_space.shape))
+        actions = actions.reshape((-1, *self.action_space.shape))  # type: ignore[misc]
         return actions, values, cost_values, log_prob
 
-    def evaluate_actions(self, obs: th.Tensor,
-                         actions: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor, Optional[th.Tensor]]:
+    def evaluate_actions(
+        self, obs: PyTorchObs, actions: th.Tensor
+    ) -> tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor | None]:
         """
         Evaluate actions according to the current policy,
         given the observations.
@@ -183,19 +189,37 @@ class SafeActorCriticPolicy(ActorCriticPolicy):
         entropy = distribution.entropy()
         return values, cost_values, log_prob, entropy
 
-    def extract_features(self, obs: th.Tensor) -> Union[th.Tensor, Tuple[th.Tensor, th.Tensor, th.Tensor]]:
+    def extract_features(  # type: ignore[override]
+        self, obs: PyTorchObs, features_extractor: BaseFeaturesExtractor | None = None
+    ) -> th.Tensor | tuple[th.Tensor, th.Tensor, th.Tensor]:
         """
         Preprocess the observation if needed and extract features.
 
         :param obs: Observation
-        :return: the output of the features extractor(s)
+        :param features_extractor: The features extractor to use. If None, then ``self.features_extractor`` is used.
+        :return: The extracted features. If features extractor is not shared, returns a tuple with the
+            features for the actor, critic, and cost.
         """
         if self.share_features_extractor:
-            return BasePolicy.extract_features(self, obs, self.features_extractor)
+            if features_extractor is None:
+                features_extractor = self.features_extractor
+            return BasePolicy.extract_features(self, obs, features_extractor)
         else:
-            pi_features = BasePolicy.extract_features(self, obs, self.pi_features_extractor)
-            vf_features = BasePolicy.extract_features(self, obs, self.vf_features_extractor)
-            cvf_features = BasePolicy.extract_features(self, obs, self.cvf_features_extractor)
+            if features_extractor is not None:
+                warnings.warn(
+                    "Provided features_extractor will be ignored because the features extractor is not shared.",
+                    UserWarning,
+                )
+
+            pi_features = BasePolicy.extract_features(
+                self, obs, self.pi_features_extractor
+            )
+            vf_features = BasePolicy.extract_features(
+                self, obs, self.vf_features_extractor
+            )
+            cvf_features = BasePolicy.extract_features(
+                self, obs, self.cvf_features_extractor
+            )
             return pi_features, vf_features, cvf_features
 
     def predict_cost_values(self, obs: th.Tensor) -> th.Tensor:
@@ -247,20 +271,20 @@ class SafeActorCriticCnnPolicy(SafeActorCriticPolicy):
         observation_space: spaces.Space,
         action_space: spaces.Space,
         lr_schedule: Schedule,
-        net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
-        activation_fn: Type[nn.Module] = nn.Tanh,
+        net_arch: list[int] | dict[str, list[int]] | None = None,
+        activation_fn: type[nn.Module] = nn.Tanh,
         ortho_init: bool = True,
         use_sde: bool = False,
         log_std_init: float = 0.0,
         full_std: bool = True,
         use_expln: bool = False,
         squash_output: bool = False,
-        features_extractor_class: Type[BaseFeaturesExtractor] = NatureCNN,
-        features_extractor_kwargs: Optional[Dict[str, Any]] = None,
+        features_extractor_class: type[BaseFeaturesExtractor] = NatureCNN,
+        features_extractor_kwargs: dict[str, Any] | None = None,
         share_features_extractor: bool = True,
         normalize_images: bool = True,
-        optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
-        optimizer_kwargs: Optional[Dict[str, Any]] = None,
+        optimizer_class: type[th.optim.Optimizer] = th.optim.Adam,
+        optimizer_kwargs: dict[str, Any] | None = None,
     ):
         super().__init__(
             observation_space,
@@ -320,20 +344,20 @@ class SafeMultiInputActorCriticPolicy(SafeActorCriticPolicy):
         observation_space: spaces.Dict,
         action_space: spaces.Space,
         lr_schedule: Schedule,
-        net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
-        activation_fn: Type[nn.Module] = nn.Tanh,
+        net_arch: list[int] | dict[str, list[int]] | None = None,
+        activation_fn: type[nn.Module] = nn.Tanh,
         ortho_init: bool = True,
         use_sde: bool = False,
         log_std_init: float = 0.0,
         full_std: bool = True,
         use_expln: bool = False,
         squash_output: bool = False,
-        features_extractor_class: Type[BaseFeaturesExtractor] = CombinedExtractor,
-        features_extractor_kwargs: Optional[Dict[str, Any]] = None,
+        features_extractor_class: type[BaseFeaturesExtractor] = CombinedExtractor,
+        features_extractor_kwargs: dict[str, Any] | None = None,
         share_features_extractor: bool = True,
         normalize_images: bool = True,
-        optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
-        optimizer_kwargs: Optional[Dict[str, Any]] = None,
+        optimizer_class: type[th.optim.Optimizer] = th.optim.Adam,
+        optimizer_kwargs: dict[str, Any] | None = None,
     ):
         super().__init__(
             observation_space,
