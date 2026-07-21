@@ -1,6 +1,6 @@
-gymnasium==0.28.1
-numpy>=1.23.5
-torch>=1.11
-stable-baselines3>=2.0.0
-sb3-contrib>=2.0.0
-tqdm>=4.65.0
+gymnasium==1.3.0
+numpy>=2.2.6
+torch>=2.13.0
+stable-baselines3>=2.9.0
+sb3-contrib>=2.9.0
+tqdm>=4.69.0
