@@ -13,7 +13,11 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
 ]
-dependencies = ['stable-baselines3>=2.9.0']
+dependencies = ["stable-baselines3>=2.9.0"]
+
+[project.optional-dependencies]
+gnn = ["torch-geometric>=2.8.0"]
+all = ["stable-baselines3>=2.9.0", "torch-geometric>=2.8.0"]
 
 [project.urls]
 "Homepage" = "https://github.com/adysonmaia/sb3-plus"
